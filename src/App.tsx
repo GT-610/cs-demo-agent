@@ -1,3 +1,4 @@
+import { Box } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import { useAnalysisSession } from "./app/useAnalysisSession";
 import { AnalysisSidebar } from "./components/AnalysisSidebar";
@@ -24,7 +25,22 @@ export function App() {
   }, [locale]);
 
   return (
-    <div className="app-shell">
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: "312px minmax(0, 1fr)",
+        gridTemplateRows: "66px minmax(0, 1fr)",
+        height: "100vh",
+        "@media (max-width: 1230px)": {
+          gridTemplateColumns: "280px minmax(0, 1fr)",
+        },
+        "@media (max-width: 1040px)": {
+          gridTemplateColumns: "260px minmax(0, 1fr)",
+          height: "auto",
+          minHeight: "100vh",
+        },
+      }}
+    >
       <AppHeader
         locale={locale}
         setLocale={setLocale}
@@ -48,7 +64,23 @@ export function App() {
         updateProvider={session.updateProvider}
         t={t}
       />
-      <main className="workspace">
+      <Box
+        component="main"
+        sx={{
+          display: "grid",
+          gridColumn: 2,
+          gridRow: 2,
+          gridTemplateColumns: "minmax(480px, 1fr) 326px",
+          minWidth: 0,
+          minHeight: 0,
+          "@media (max-width: 1230px)": {
+            gridTemplateColumns: "minmax(450px, 1fr) 290px",
+          },
+          "@media (max-width: 1040px)": {
+            gridTemplateColumns: "minmax(0, 1fr)",
+          },
+        }}
+      >
         <Conversation
           messages={session.messages}
           provider={session.provider}
@@ -64,7 +96,7 @@ export function App() {
           t={t}
         />
         <EvidencePanel evidence={session.evidence} t={t} />
-      </main>
-    </div>
+      </Box>
+    </Box>
   );
 }
