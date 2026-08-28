@@ -89,6 +89,30 @@ svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-linecap:
 .ghost-button { border: 1px solid var(--line-strong); background: transparent; }
 .compact-button { flex: 0 0 auto; padding: 8px 12px; border-radius: 4px; color: var(--muted-strong); font-size: 0.71rem; font-weight: 650; }
 .compact-button:not(:disabled):hover { border-color: rgba(183, 243, 75, 0.45); color: var(--acid); }
+.language-switcher {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  color: #687169;
+  font-size: 0.61rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.language-switcher select {
+  height: 31px;
+  padding: 0 25px 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted-strong);
+  outline: none;
+  background: #0b0e0c;
+  font-size: 0.67rem;
+  text-transform: none;
+}
+.language-switcher select:hover,
+.language-switcher select:focus { border-color: rgba(183, 243, 75, 0.45); }
 
 .sidebar {
   grid-column: 1;
@@ -298,4 +322,5 @@ svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-linecap:
   .workspace { grid-template-columns: minmax(0,1fr); }
   .conversation { min-height: calc(100vh - 66px); }
   .evidence-panel { display: none; }
+  .language-switcher > span { display: none; }
 }

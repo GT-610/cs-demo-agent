@@ -9,6 +9,7 @@ CS Demo Agent is a local-first desktop application for analyzing Counter-Strike 
 - OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages adapters
 - Parallel tool execution with malformed-call recovery and an iteration limit
 - Markdown conversations and an expandable evidence trace for every tool call
+- English and Simplified Chinese interface localization with system-language detection
 - Local file selection and native drag-and-drop
 - In-memory provider credentials and a constrained Rust HTTP transport
 

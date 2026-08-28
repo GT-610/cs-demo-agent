@@ -36,6 +36,15 @@ import {
   selectDemoFile,
   type DemoToolResult,
 } from "./bridge/tauri";
+import {
+  detectLocale,
+  LOCALE_LABELS,
+  translate,
+  type Locale,
+  type TranslationKey,
+  type TranslationParams,
+  type Translator,
+} from "./i18n";
 
 interface ChatEntry {
   id: number;
@@ -56,18 +65,25 @@ interface RuntimeCache {
   runtime: AgentRuntime;
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  get_demo_header: "Demo header",
-  get_player_info: "Player roster",
-  list_game_events: "Game event index",
-  query_events: "Event query",
-  query_ticks: "Tick query",
-  query_grenades: "Grenade trajectories",
-  get_round_summary: "Round summary",
-  get_economy_analysis: "Economy analysis",
+interface StatusMessage {
+  key: TranslationKey;
+  params?: TranslationParams;
+  toolName?: string;
+}
+
+const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
+  get_demo_header: "tool.getDemoHeader",
+  get_player_info: "tool.getPlayerInfo",
+  list_game_events: "tool.listGameEvents",
+  query_events: "tool.queryEvents",
+  query_ticks: "tool.queryTicks",
+  query_grenades: "tool.queryGrenades",
+  get_round_summary: "tool.getRoundSummary",
+  get_economy_analysis: "tool.getEconomyAnalysis",
 };
 
 export function App() {
+  const [locale, setLocale] = useState<Locale>(detectLocale);
   const [demoPath, setDemoPath] = useState("");
   const [header, setHeader] = useState<DemoToolResult | null>(null);
   const [players, setPlayers] = useState<DemoToolResult | null>(null);
@@ -79,11 +95,20 @@ export function App() {
   const [evidence, setEvidence] = useState<EvidenceEntry[]>([]);
   const [demoLoading, setDemoLoading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [status, setStatus] = useState("Ready for a demo");
+  const [status, setStatus] = useState<StatusMessage>({
+    key: "status.readyDemo",
+  });
   const [error, setError] = useState<string | null>(null);
   const runtimeRef = useRef<RuntimeCache | null>(null);
   const messageIdRef = useRef(0);
   const loadIdRef = useRef(0);
+  const t = useCallback<Translator>(
+    (key, params) => translate(locale, key, params),
+    [locale],
+  );
+  const statusText = status.toolName
+    ? t(status.key, { tool: toolLabel(status.toolName, t) })
+    : t(status.key, status.params);
 
   const providerReady = isProviderReady(provider);
   const canSend =
@@ -93,13 +118,19 @@ export function App() {
     [demoPath, provider],
   );
 
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   const resetConversation = useCallback(() => {
     runtimeRef.current?.runtime.reset();
     runtimeRef.current = null;
     setMessages([]);
     setEvidence([]);
     setError(null);
-    setStatus(demoPath ? "Ready for analysis" : "Ready for a demo");
+    setStatus({
+      key: demoPath ? "status.readyAnalysis" : "status.readyDemo",
+    });
   }, [demoPath]);
 
   useEffect(() => {
@@ -108,7 +139,9 @@ export function App() {
       setMessages([]);
       setEvidence([]);
       setError(null);
-      setStatus(demoPath ? "Configuration changed — ready" : "Ready for a demo");
+      setStatus({
+        key: demoPath ? "status.configurationChanged" : "status.readyDemo",
+      });
     }
   }, [currentSessionKey, demoPath]);
 
@@ -116,7 +149,7 @@ export function App() {
     const loadId = ++loadIdRef.current;
     setDemoLoading(true);
     setError(null);
-    setStatus("Reading demo header and roster…");
+    setStatus({ key: "status.readingDemo" });
     try {
       const overview = await loadDemoOverview(path);
       if (loadId !== loadIdRef.current) {
@@ -128,11 +161,11 @@ export function App() {
       setPlayers(overview.players);
       setMessages([]);
       setEvidence([]);
-      setStatus("Demo ready for analysis");
+      setStatus({ key: "status.demoReady" });
     } catch (caught) {
       if (loadId === loadIdRef.current) {
         setError(errorMessage(caught));
-        setStatus("Could not open demo");
+        setStatus({ key: "status.openFailed" });
       }
     } finally {
       if (loadId === loadIdRef.current) {
@@ -161,22 +194,28 @@ export function App() {
 
   const chooseDemo = useCallback(async () => {
     try {
-      const path = await selectDemoFile();
+      const path = await selectDemoFile(t("demo.dialogTitle"));
       if (path) {
         await openDemo(path);
       }
     } catch (caught) {
       setError(errorMessage(caught));
     }
-  }, [openDemo]);
+  }, [openDemo, t]);
 
   const updateEvidence = useCallback((event: AgentEvent) => {
     if (event.type === "assistant-start") {
-      setStatus(`Model pass ${event.iteration}…`);
+      setStatus({
+        key: "status.modelPass",
+        params: { iteration: event.iteration },
+      });
       return;
     }
     if (event.type === "tool-start") {
-      setStatus(`Running ${TOOL_LABELS[event.call.name] ?? event.call.name}…`);
+      setStatus({
+        key: "status.runningTool",
+        toolName: event.call.name,
+      });
       setEvidence((current) => [
         ...current,
         {
@@ -204,7 +243,7 @@ export function App() {
       return;
     }
     if (event.type === "error") {
-      setStatus("Analysis failed");
+      setStatus({ key: "status.analysisFailed" });
     }
   }, []);
 
@@ -237,7 +276,7 @@ export function App() {
       setDraft("");
       setError(null);
       setSending(true);
-      setStatus("Planning evidence queries…");
+      setStatus({ key: "status.planning" });
       try {
         const reply = await getRuntime().send(question, updateEvidence);
         setMessages((current) => [
@@ -245,18 +284,18 @@ export function App() {
           {
             id: ++messageIdRef.current,
             role: "assistant",
-            content: reply.text || "The model returned no final text.",
+            content: reply.text || t("chat.noFinalText"),
           },
         ]);
-        setStatus("Analysis complete");
+        setStatus({ key: "status.complete" });
       } catch (caught) {
         setError(errorMessage(caught));
-        setStatus("Analysis failed");
+        setStatus({ key: "status.analysisFailed" });
       } finally {
         setSending(false);
       }
     },
-    [canSend, draft, getRuntime, updateEvidence],
+    [canSend, draft, getRuntime, t, updateEvidence],
   );
 
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -280,28 +319,42 @@ export function App() {
           <CrosshairIcon />
         </div>
         <div className="brand-copy">
-          <span className="eyebrow">LOCAL DEMO INTELLIGENCE</span>
+          <span className="eyebrow">{t("brand.tagline")}</span>
           <strong>CS Demo Agent</strong>
         </div>
-        <div className="topbar-status" title={status}>
+        <div className="topbar-status" title={statusText}>
           <span
             className={`status-dot ${sending || demoLoading ? "is-busy" : ""}`}
           />
-          {status}
+          {statusText}
         </div>
+        <label className="language-switcher">
+          <span>{t("language.label")}</span>
+          <select
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
+            aria-label={t("language.label")}
+          >
+            {Object.entries(LOCALE_LABELS).map(([value, label]) => (
+              <option value={value} key={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           className="ghost-button compact-button"
           type="button"
           onClick={resetConversation}
           disabled={sending || (messages.length === 0 && evidence.length === 0)}
         >
-          Clear session
+          {t("action.clearSession")}
         </button>
       </header>
 
       <aside className="sidebar">
         <section className="panel-section demo-section">
-          <SectionHeading number="01" title="Demo source" />
+          <SectionHeading number="01" title={t("demo.section")} />
           <button
             className={`drop-zone ${demoPath ? "has-demo" : ""}`}
             type="button"
@@ -313,38 +366,47 @@ export function App() {
             </span>
             <strong>
               {demoLoading
-                ? "Parsing overview…"
+                ? t("demo.parsing")
                 : demoPath
                   ? fileName(demoPath)
-                  : "Drop a .dem file here"}
+                  : t("demo.drop")}
             </strong>
-            <span>{demoPath ? "Click to choose another" : "or click to browse"}</span>
+            <span>{demoPath ? t("demo.change") : t("demo.browse")}</span>
           </button>
           {demoPath && (
             <div className="file-path" title={demoPath}>
               {demoPath}
             </div>
           )}
-          {headerObject && <DemoFacts header={headerObject} />}
+          {headerObject && <DemoFacts header={headerObject} t={t} />}
         </section>
 
         <section className="panel-section roster-section">
-          <SectionHeading number="02" title="Player roster" count={roster.length} />
+          <SectionHeading
+            number="02"
+            title={t("roster.section")}
+            count={roster.length}
+          />
           {roster.length === 0 ? (
-            <p className="empty-copy">Select a demo to inspect its recorded roster.</p>
+            <p className="empty-copy">{t("roster.empty")}</p>
           ) : (
             <div className="roster-list">
               {roster.map((player, index) => (
-                <PlayerRow player={player} index={index} key={playerKey(player, index)} />
+                <PlayerRow
+                  player={player}
+                  index={index}
+                  key={playerKey(player, index)}
+                  t={t}
+                />
               ))}
             </div>
           )}
         </section>
 
         <section className="panel-section provider-section">
-          <SectionHeading number="03" title="Model provider" />
+          <SectionHeading number="03" title={t("provider.section")} />
           <label className="field-label">
-            Protocol
+            {t("provider.protocol")}
             <select
               value={provider.kind}
               disabled={sending}
@@ -362,51 +424,59 @@ export function App() {
             </select>
           </label>
           <ProviderInput
-            label="Base URL"
+            label={t("provider.baseUrl")}
             type="url"
             value={provider.baseUrl}
             disabled={sending}
             onChange={(value) => setProvider((current) => ({ ...current, baseUrl: value }))}
           />
           <ProviderInput
-            label="Model"
+            label={t("provider.model")}
             value={provider.model}
             placeholder={provider.kind === "anthropic" ? "claude-…" : "gpt-…"}
             disabled={sending}
             onChange={(value) => setProvider((current) => ({ ...current, model: value }))}
           />
           <ProviderInput
-            label="API key"
+            label={t("provider.apiKey")}
             type="password"
             value={provider.apiKey}
-            placeholder="Session only"
+            placeholder={t("provider.sessionOnly")}
             disabled={sending}
             onChange={(value) => setProvider((current) => ({ ...current, apiKey: value }))}
           />
           <p className="privacy-note">
-            <LockIcon /> Keys stay in memory. Raw demo bytes never leave this device.
+            <LockIcon /> {t("provider.privacy")}
           </p>
         </section>
       </aside>
 
       <main className="workspace">
-        <section className="conversation" aria-label="Analysis conversation">
+        <section className="conversation" aria-label={t("chat.ariaLabel")}>
           <div className="workspace-heading">
             <div>
-              <span className="eyebrow">EVIDENCE-BACKED CHAT</span>
-              <h1>Match analysis</h1>
+              <span className="eyebrow">{t("chat.eyebrow")}</span>
+              <h1>{t("chat.title")}</h1>
             </div>
             <span className="provider-pill">{PROVIDER_LABELS[provider.kind]}</span>
           </div>
 
           <div className="message-stream" aria-live="polite">
             {messages.length === 0 ? (
-              <EmptyConversation hasDemo={!!demoPath} providerReady={providerReady} />
+              <EmptyConversation
+                hasDemo={!!demoPath}
+                providerReady={providerReady}
+                t={t}
+              />
             ) : (
               messages.map((message) => (
                 <article className={`message message-${message.role}`} key={message.id}>
                   <div className="message-role">
-                    {message.role === "assistant" ? <CrosshairIcon /> : <span>YOU</span>}
+                    {message.role === "assistant" ? (
+                      <CrosshairIcon />
+                    ) : (
+                      <span>{t("chat.you")}</span>
+                    )}
                   </div>
                   <div className="message-body">
                     {message.role === "assistant" ? (
@@ -425,7 +495,7 @@ export function App() {
                 <div className="message-role">
                   <SpinnerIcon />
                 </div>
-                <div className="thinking-bars" aria-label="Agent is working">
+                <div className="thinking-bars" aria-label={t("chat.working")}>
                   <span />
                   <span />
                   <span />
@@ -437,10 +507,10 @@ export function App() {
           <form className="composer" onSubmit={(event) => void submit(event)}>
             {error && (
               <div className="error-banner" role="alert">
-                <strong>Request failed</strong>
+                <strong>{t("error.requestFailed")}</strong>
                 <span>{error}</span>
                 <button type="button" onClick={() => setError(null)}>
-                  Dismiss
+                  {t("action.dismiss")}
                 </button>
               </div>
             )}
@@ -451,43 +521,42 @@ export function App() {
                 onKeyDown={handleComposerKeyDown}
                 disabled={sending}
                 rows={3}
-                placeholder={composerPlaceholder(!!demoPath, providerReady)}
-                aria-label="Ask about the selected demo"
+                placeholder={composerPlaceholder(!!demoPath, providerReady, t)}
+                aria-label={t("composer.ariaLabel")}
               />
               <button className="send-button" type="submit" disabled={!canSend}>
-                <span>{sending ? "Analyzing" : "Analyze"}</span>
+                <span>
+                  {sending ? t("action.analyzing") : t("action.analyze")}
+                </span>
                 <ArrowIcon />
               </button>
             </div>
             <div className="composer-hint">
-              <span>Enter to send · Shift+Enter for a new line</span>
-              <span>Answers cite parsed events, rounds, and ticks</span>
+              <span>{t("composer.sendHint")}</span>
+              <span>{t("composer.evidenceHint")}</span>
             </div>
           </form>
         </section>
 
-        <aside className="evidence-panel" aria-label="Tool evidence">
+        <aside className="evidence-panel" aria-label={t("evidence.ariaLabel")}>
           <div className="evidence-heading">
             <div>
-              <span className="eyebrow">TRACE</span>
-              <h2>Evidence</h2>
+              <span className="eyebrow">{t("evidence.eyebrow")}</span>
+              <h2>{t("evidence.title")}</h2>
             </div>
             <span className="evidence-count">{evidence.length}</span>
           </div>
-          <p className="evidence-intro">
-            Every claim can be traced to a local parser query. Expand an item to
-            inspect its inputs and result preview.
-          </p>
+          <p className="evidence-intro">{t("evidence.intro")}</p>
           <div className="evidence-list">
             {evidence.length === 0 ? (
               <div className="evidence-empty">
                 <PulseIcon />
-                <strong>No queries yet</strong>
-                <span>Tool calls will appear here during analysis.</span>
+                <strong>{t("evidence.emptyTitle")}</strong>
+                <span>{t("evidence.emptyDetail")}</span>
               </div>
             ) : (
               evidence.map((item, index) => (
-                <EvidenceCard item={item} index={index} key={item.key} />
+                <EvidenceCard item={item} index={index} key={item.key} t={t} />
               ))
             )}
           </div>
@@ -515,19 +584,48 @@ function SectionHeading({
   );
 }
 
-function DemoFacts({ header }: { header: JsonObject }) {
+function DemoFacts({ header, t }: { header: JsonObject; t: Translator }) {
   return (
     <div className="demo-facts">
-      <Fact label="Map" value={readString(header, "map_name", "mapName") || "Unknown"} accent />
-      <Fact label="Server" value={readString(header, "server_name", "serverName") || "Not recorded"} />
-      <Fact label="Format" value={readString(header, "demo_version_name", "demoVersionName") || "Source 2 demo"} />
-      <Fact label="Protocol" value={readString(header, "network_protocol", "networkProtocol") || "—"} />
+      <Fact
+        label={t("facts.map")}
+        value={readString(header, "map_name", "mapName") || t("facts.unknown")}
+        accent
+      />
+      <Fact
+        label={t("facts.server")}
+        value={
+          readString(header, "server_name", "serverName") ||
+          t("facts.notRecorded")
+        }
+      />
+      <Fact
+        label={t("facts.format")}
+        value={
+          readString(header, "demo_version_name", "demoVersionName") ||
+          t("facts.source2")
+        }
+      />
+      <Fact
+        label={t("facts.protocol")}
+        value={readString(header, "network_protocol", "networkProtocol") || "—"}
+      />
     </div>
   );
 }
 
-function PlayerRow({ player, index }: { player: JsonObject; index: number }) {
-  const name = readString(player, "name", "player_name") || `Player ${index + 1}`;
+function PlayerRow({
+  player,
+  index,
+  t,
+}: {
+  player: JsonObject;
+  index: number;
+  t: Translator;
+}) {
+  const name =
+    readString(player, "name", "player_name") ||
+    t("roster.player", { number: index + 1 });
   const steamId = readString(player, "steamid", "steam_id");
   const team = readNumber(player, "team_number", "team_num");
   return (
@@ -573,32 +671,48 @@ function ProviderInput({
   );
 }
 
-function EvidenceCard({ item, index }: { item: EvidenceEntry; index: number }) {
+function EvidenceCard({
+  item,
+  index,
+  t,
+}: {
+  item: EvidenceEntry;
+  index: number;
+  t: Translator;
+}) {
   const meta = readMeta(item.result);
   return (
     <details className={`evidence-card status-${item.status}`}>
       <summary>
         <span className="evidence-index">{String(index + 1).padStart(2, "0")}</span>
         <span className="evidence-name">
-          <strong>{TOOL_LABELS[item.call.name] ?? item.call.name}</strong>
-          <small>Pass {item.iteration}</small>
+          <strong>{toolLabel(item.call.name, t)}</strong>
+          <small>{t("evidence.pass", { iteration: item.iteration })}</small>
         </span>
         <span className="evidence-state">
-          {item.status === "running" ? <SpinnerIcon /> : item.status}
+          {item.status === "running" ? (
+            <SpinnerIcon />
+          ) : item.status === "success" ? (
+            t("evidence.success")
+          ) : (
+            t("evidence.error")
+          )}
         </span>
       </summary>
       <div className="evidence-detail">
         <div className="evidence-tags">
-          {meta.sampled && <span>sampled</span>}
-          {meta.truncated && <span>truncated</span>}
-          {typeof meta.rowCount === "number" && <span>{meta.rowCount} rows</span>}
+          {meta.sampled && <span>{t("evidence.sampled")}</span>}
+          {meta.truncated && <span>{t("evidence.truncated")}</span>}
+          {typeof meta.rowCount === "number" && (
+            <span>{t("evidence.rows", { count: meta.rowCount })}</span>
+          )}
         </div>
-        <h3>Arguments</h3>
+        <h3>{t("evidence.arguments")}</h3>
         <pre>{formatJsonString(item.call.arguments)}</pre>
         {item.result !== undefined && (
           <>
-            <h3>Result preview</h3>
-            <pre>{previewJson(item.result)}</pre>
+            <h3>{t("evidence.resultPreview")}</h3>
+            <pre>{previewJson(item.result, t)}</pre>
           </>
         )}
       </div>
@@ -606,13 +720,25 @@ function EvidenceCard({ item, index }: { item: EvidenceEntry; index: number }) {
   );
 }
 
-function EmptyConversation({ hasDemo, providerReady }: { hasDemo: boolean; providerReady: boolean }) {
-  const title = !hasDemo ? "Load a match to begin" : !providerReady ? "Configure a model" : "Ask for a verifiable analysis";
-  const detail = !hasDemo
-    ? "Choose or drop a Counter-Strike 2 .dem file. The parser reads it locally."
+function EmptyConversation({
+  hasDemo,
+  providerReady,
+  t,
+}: {
+  hasDemo: boolean;
+  providerReady: boolean;
+  t: Translator;
+}) {
+  const title = !hasDemo
+    ? t("empty.loadTitle")
     : !providerReady
-      ? "Enter a valid provider base URL and model name in the left panel."
-      : "Try a match overview, a round-by-round review, economy analysis, or a player performance question.";
+      ? t("empty.providerTitle")
+      : t("empty.readyTitle");
+  const detail = !hasDemo
+    ? t("empty.loadDetail")
+    : !providerReady
+      ? t("empty.providerDetail")
+      : t("empty.readyDetail");
   return (
     <div className="conversation-empty">
       <div className="radar-graphic" aria-hidden="true">
@@ -620,14 +746,14 @@ function EmptyConversation({ hasDemo, providerReady }: { hasDemo: boolean; provi
         <span />
         <CrosshairIcon />
       </div>
-      <span className="empty-kicker">ANALYSIS WORKSPACE</span>
+      <span className="empty-kicker">{t("empty.kicker")}</span>
       <h2>{title}</h2>
       <p>{detail}</p>
       {hasDemo && providerReady && (
         <div className="prompt-examples">
-          <span>“Give me the match overview”</span>
-          <span>“Which rounds decided the game?”</span>
-          <span>“Analyze both teams’ economy”</span>
+          <span>{t("empty.exampleOverview")}</span>
+          <span>{t("empty.exampleRounds")}</span>
+          <span>{t("empty.exampleEconomy")}</span>
         </div>
       )}
     </div>
@@ -643,10 +769,14 @@ function Fact({ label, value, accent = false }: { label: string; value: string; 
   );
 }
 
-function composerPlaceholder(hasDemo: boolean, providerReady: boolean): string {
-  if (!hasDemo) return "Select a demo before asking a question…";
-  if (!providerReady) return "Enter a model name and valid provider URL…";
-  return "Ask about rounds, players, economy, utility, positioning…";
+function composerPlaceholder(
+  hasDemo: boolean,
+  providerReady: boolean,
+  t: Translator,
+): string {
+  if (!hasDemo) return t("composer.needDemo");
+  if (!providerReady) return t("composer.needProvider");
+  return t("composer.ready");
 }
 
 function evidenceKey(iteration: number, call: ToolCall): string {
@@ -698,9 +828,16 @@ function formatJsonString(value: string): string {
   }
 }
 
-function previewJson(value: JsonValue): string {
+function previewJson(value: JsonValue, t: Translator): string {
   const serialized = JSON.stringify(value, null, 2);
-  return serialized.length > 2600 ? `${serialized.slice(0, 2600)}\n… preview limited in the interface` : serialized;
+  return serialized.length > 2600
+    ? `${serialized.slice(0, 2600)}\n${t("evidence.previewLimited")}`
+    : serialized;
+}
+
+function toolLabel(name: string, t: Translator): string {
+  const key = TOOL_LABEL_KEYS[name];
+  return key ? t(key) : name;
 }
 
 function errorMessage(value: unknown): string {

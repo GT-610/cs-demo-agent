@@ -85,9 +85,11 @@ export async function loadDemoOverview(
   return { header, players };
 }
 
-export async function selectDemoFile(): Promise<string | null> {
+export async function selectDemoFile(
+  title = "Select a Counter-Strike demo",
+): Promise<string | null> {
   const selected = await open({
-    title: "Select a Counter-Strike demo",
+    title,
     multiple: false,
     directory: false,
     filters: [{ name: "Counter-Strike Demo", extensions: ["dem"] }],
