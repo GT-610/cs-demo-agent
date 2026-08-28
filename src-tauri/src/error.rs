@@ -12,6 +12,8 @@ pub enum AppError {
     Provider(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("database error: {0}")]
+    Database(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;

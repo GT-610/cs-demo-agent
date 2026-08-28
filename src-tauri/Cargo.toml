@@ -18,6 +18,7 @@ ahash = "0.8"
 memmap2 = "0.9"
 parser = { path = "../vendor/demoparser/parser" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
