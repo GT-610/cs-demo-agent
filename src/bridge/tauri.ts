@@ -1,0 +1,120 @@
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
+import type {
+  HttpJsonRequest,
+  HttpJsonResponse,
+  HttpTransport,
+  JsonObject,
+  JsonValue,
+  ToolExecutor,
+} from "../agent/types";
+
+export interface QueryMeta {
+  row_count?: number | null;
+  original_row_count?: number | null;
+  truncated: boolean;
+  sampled: boolean;
+}
+
+export interface DemoToolResult {
+  data: JsonValue;
+  meta: QueryMeta;
+}
+
+export type InvokeFunction = <T>(
+  command: string,
+  args?: Record<string, unknown>,
+) => Promise<T>;
+
+type DemoDropHandler = (path: string) => void;
+
+const PATH_ONLY_TOOLS = new Set([
+  "get_demo_header",
+  "get_player_info",
+  "list_game_events",
+  "get_round_summary",
+  "get_economy_analysis",
+]);
+
+const REQUEST_TOOLS = new Set([
+  "query_events",
+  "query_ticks",
+  "query_grenades",
+]);
+
+export function createHttpTransport(
+  invokeCommand: InvokeFunction = invoke,
+): HttpTransport {
+  return (request: HttpJsonRequest) =>
+    invokeCommand<HttpJsonResponse>("send_http_json", { request });
+}
+
+export function createDemoToolExecutor(
+  demoPath: string,
+  invokeCommand: InvokeFunction = invoke,
+): ToolExecutor {
+  const validatedPath = normalizeDemoPath(demoPath);
+
+  return async (name: string, input: JsonObject): Promise<JsonValue> => {
+    if (PATH_ONLY_TOOLS.has(name)) {
+      const result = await invokeCommand<DemoToolResult>(name, {
+        path: validatedPath,
+      });
+      return result as unknown as JsonValue;
+    }
+    if (REQUEST_TOOLS.has(name)) {
+      const result = await invokeCommand<DemoToolResult>(name, {
+        request: { ...input, path: validatedPath },
+      });
+      return result as unknown as JsonValue;
+    }
+    throw new Error(`Unknown demo tool: ${name}`);
+  };
+}
+
+export async function loadDemoOverview(
+  demoPath: string,
+  invokeCommand: InvokeFunction = invoke,
+): Promise<{ header: DemoToolResult; players: DemoToolResult }> {
+  const path = normalizeDemoPath(demoPath);
+  const [header, players] = await Promise.all([
+    invokeCommand<DemoToolResult>("get_demo_header", { path }),
+    invokeCommand<DemoToolResult>("get_player_info", { path }),
+  ]);
+  return { header, players };
+}
+
+export async function selectDemoFile(): Promise<string | null> {
+  const selected = await open({
+    title: "Select a Counter-Strike demo",
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Counter-Strike Demo", extensions: ["dem"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function listenForDemoDrops(
+  handler: DemoDropHandler,
+): Promise<() => void> {
+  return getCurrentWindow().onDragDropEvent((event) => {
+    if (event.payload.type !== "drop") {
+      return;
+    }
+    const path = event.payload.paths.find((candidate) =>
+      candidate.toLowerCase().endsWith(".dem"),
+    );
+    if (path) {
+      handler(path);
+    }
+  });
+}
+
+export function normalizeDemoPath(path: string): string {
+  const normalized = path.trim();
+  if (!normalized.toLowerCase().endsWith(".dem")) {
+    throw new Error("Select a .dem Counter-Strike demo file");
+  }
+  return normalized;
+}
