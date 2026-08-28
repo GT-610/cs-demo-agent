@@ -13,7 +13,10 @@ class SequenceAdapter implements ProviderAdapter {
 
   constructor(private readonly turns: Array<ProviderTurn | Error>) {}
 
-  async generate(request: ProviderRequest): Promise<ProviderTurn> {
+  async generate(
+    request: ProviderRequest,
+    onTextDelta: (delta: string) => void = () => undefined,
+  ): Promise<ProviderTurn> {
     this.requests.push(request);
     const turn = this.turns.shift();
     if (!turn) {
@@ -22,6 +25,7 @@ class SequenceAdapter implements ProviderAdapter {
     if (turn instanceof Error) {
       throw turn;
     }
+    if (turn.text) onTextDelta(turn.text);
     return turn;
   }
 }
@@ -76,6 +80,13 @@ describe("AgentRuntime", () => {
       ),
     ).toBe(true);
     expect(events.some((event) => event.type === "tool-result")).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "assistant-delta" &&
+          event.delta === "地图是 de_ancient。",
+      ),
+    ).toBe(true);
   });
 
   test("returns malformed tool arguments to the model as structured evidence", async () => {
@@ -223,6 +234,43 @@ describe("AgentRuntime", () => {
     expect(reply.messages).toHaveLength(3);
     expect(history).toHaveLength(3);
     expect(runtime.history).toHaveLength(5);
+  });
+
+  test("restores persisted history and continuation for a later request", async () => {
+    const continuation = {
+      provider: "openai-responses" as const,
+      inputItems: [{ role: "user", content: "first" }],
+      acknowledgedMessages: 3,
+    };
+    const firstRuntime = new AgentRuntime({
+      adapter: new SequenceAdapter([
+        { text: "first answer", toolCalls: [], continuation },
+      ]),
+      config,
+      tools: [],
+      systemPrompt: "Old prompt.",
+      executeTool: async () => ({}),
+    });
+    await firstRuntime.send("first");
+
+    const adapter = new SequenceAdapter([{ text: "second answer", toolCalls: [] }]);
+    const restored = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Updated prompt.",
+      initialState: firstRuntime.state,
+      executeTool: async () => ({}),
+    });
+    await restored.send("second");
+
+    expect(adapter.requests[0]?.messages).toEqual([
+      { role: "system", content: "Updated prompt." },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "first answer", toolCalls: [] },
+      { role: "user", content: "second" },
+    ]);
+    expect(adapter.requests[0]?.continuation).toEqual(continuation);
   });
 
   test("rolls back when an event callback throws", async () => {

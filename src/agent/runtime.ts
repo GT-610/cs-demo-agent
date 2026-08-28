@@ -1,6 +1,7 @@
 import type {
   AgentEventHandler,
   AgentMessage,
+  AgentRuntimeState,
   AssistantMessage,
   JsonObject,
   JsonValue,
@@ -20,6 +21,7 @@ export interface AgentRuntimeOptions {
   executeTool: ToolExecutor;
   systemPrompt: string;
   maxIterations?: number;
+  initialState?: AgentRuntimeState;
 }
 
 export interface AgentReply {
@@ -51,11 +53,19 @@ export class AgentRuntime {
     this.executeTool = options.executeTool;
     this.systemPrompt = options.systemPrompt;
     this.maxIterations = options.maxIterations ?? 12;
-    this.messages = [{ role: "system", content: this.systemPrompt }];
+    this.messages = restoreMessages(options.initialState, this.systemPrompt);
+    this.continuation = cloneContinuation(options.initialState?.continuation);
   }
 
   get history(): readonly AgentMessage[] {
-    return this.messages.slice();
+    return cloneMessages(this.messages);
+  }
+
+  get state(): AgentRuntimeState {
+    return {
+      messages: cloneMessages(this.messages),
+      continuation: cloneContinuation(this.continuation),
+    };
   }
 
   reset(): void {
@@ -87,12 +97,15 @@ export class AgentRuntime {
       this.messages.push({ role: "user", content: text });
       for (let iteration = 1; iteration <= this.maxIterations; iteration += 1) {
         onEvent({ type: "assistant-start", iteration });
-        const turn = await this.adapter.generate({
-          config: this.config,
-          messages: this.messages.slice(),
-          tools: this.tools,
-          continuation: this.continuation,
-        });
+        const turn = await this.adapter.generate(
+          {
+            config: this.config,
+            messages: cloneMessages(this.messages),
+            tools: this.tools,
+            continuation: cloneContinuation(this.continuation),
+          },
+          (delta) => onEvent({ type: "assistant-delta", delta, iteration }),
+        );
         this.continuation = turn.continuation;
 
         const assistantMessage: AssistantMessage = {
@@ -101,9 +114,15 @@ export class AgentRuntime {
           toolCalls: turn.toolCalls,
         };
         this.messages.push(assistantMessage);
+        onEvent({
+          type: "assistant-end",
+          text: turn.text,
+          iteration,
+          hasToolCalls: turn.toolCalls.length > 0,
+        });
 
         if (turn.toolCalls.length === 0) {
-          return { text: turn.text, messages: this.messages.slice() };
+          return { text: turn.text, messages: cloneMessages(this.messages) };
         }
 
         const results = await Promise.all(
@@ -176,6 +195,37 @@ export class AgentRuntime {
       };
     }
   }
+}
+
+function restoreMessages(
+  state: AgentRuntimeState | undefined,
+  systemPrompt: string,
+): AgentMessage[] {
+  const restored = state?.messages?.filter((message) => message.role !== "system") ?? [];
+  return [
+    { role: "system", content: systemPrompt },
+    ...cloneMessages(restored),
+  ];
+}
+
+function cloneMessages(messages: readonly AgentMessage[]): AgentMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant") return { ...message };
+    return {
+      ...message,
+      toolCalls: message.toolCalls.map((call) => ({ ...call })),
+    };
+  });
+}
+
+function cloneContinuation(
+  continuation: ProviderContinuation | undefined,
+): ProviderContinuation | undefined {
+  if (!continuation) return undefined;
+  return {
+    ...continuation,
+    inputItems: structuredClone(continuation.inputItems),
+  };
 }
 
 function removeNullValues(value: JsonObject): JsonObject {

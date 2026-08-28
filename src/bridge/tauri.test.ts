@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createDemoToolExecutor,
   createHttpTransport,
+  createHttpStreamTransport,
   loadDemoOverview,
   normalizeDemoPath,
   type InvokeFunction,
@@ -85,6 +86,37 @@ describe("Tauri bridge", () => {
     expect(calls).toEqual([
       { command: "send_http_json", args: { request } },
     ]);
+  });
+
+  test("routes streaming provider events through a Tauri channel", async () => {
+    const calls: string[] = [];
+    const invoke: InvokeFunction = async (command, args) => {
+      calls.push(command);
+      const channel = args?.onEvent as {
+        onmessage: (event: unknown) => void;
+      };
+      channel.onmessage({ type: "started", status: 200 });
+      channel.onmessage({ type: "data", data: { delta: "hello" } });
+      channel.onmessage({ type: "done" });
+      return undefined as never;
+    };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+    const data: unknown[] = [];
+
+    const response = await transport(
+      {
+        url: "https://api.example.test/v1/responses",
+        headers: {},
+        body: { stream: true },
+        timeoutMs: 30_000,
+      },
+      (event) => data.push(event),
+    );
+
+    expect(calls).toEqual(["stream_http_json"]);
+    expect(response.status).toBe(200);
+    expect(data).toEqual([{ delta: "hello" }]);
   });
 
   test("loads header and roster together", async () => {

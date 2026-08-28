@@ -1,9 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   HttpJsonRequest,
   HttpJsonResponse,
+  HttpStreamEvent,
+  HttpStreamTransport,
   HttpTransport,
   JsonObject,
   JsonValue,
@@ -48,6 +50,37 @@ export function createHttpTransport(
 ): HttpTransport {
   return (request: HttpJsonRequest) =>
     invokeCommand<HttpJsonResponse>("send_http_json", { request });
+}
+
+interface StreamChannel {
+  onmessage: (event: HttpStreamEvent) => void;
+}
+
+export function createHttpStreamTransport(
+  invokeCommand: InvokeFunction = invoke,
+  createChannel: () => StreamChannel = () => new Channel<HttpStreamEvent>(),
+): HttpStreamTransport {
+  return async (request, onData) => {
+    let status = 0;
+    let done = false;
+    let handlerError: unknown;
+    const onEvent = createChannel();
+    onEvent.onmessage = (event) => {
+      try {
+        if (event.type === "started") status = event.status;
+        if (event.type === "data") onData(event.data);
+        if (event.type === "done") done = true;
+      } catch (error) {
+        handlerError ??= error;
+      }
+    };
+    await invokeCommand<void>("stream_http_json", { request, onEvent });
+    if (handlerError) throw handlerError;
+    if (!done || status < 200 || status >= 300) {
+      throw new Error("Provider stream ended without a successful completion");
+    }
+    return { status };
+  };
 }
 
 export function createDemoToolExecutor(
