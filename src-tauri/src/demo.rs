@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ahash::AHashMap;
@@ -16,6 +17,11 @@ use parser::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use tauri::State;
+use tokio::sync::Semaphore;
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::{AppError, AppResult};
 
@@ -24,6 +30,18 @@ const MAX_TICK_ROWS: usize = 10_000;
 const MAX_REQUESTED_TICKS: usize = 10_000;
 const MAX_PROPERTIES: usize = 40;
 const MAX_EVENT_NAMES: usize = 16;
+const MAX_STEAM_IDS: usize = 64;
+const MAX_SERIALIZED_ROWS_BYTES: usize = 512 * 1024;
+const ROW_METADATA_RESERVE_BYTES: usize = 512;
+
+const FILTER_FIELDS: &[&str] = &[
+    "total_rounds_played",
+    "is_warmup_period",
+    "is_freeze_period",
+    "tick",
+    "user_name",
+    "attacker_name",
+];
 
 const PLAYER_PROPERTIES: &[&str] = &[
     "X",
@@ -85,6 +103,9 @@ const OTHER_PROPERTIES: &[&str] = &[
     "map_name",
 ];
 
+#[cfg(test)]
+static PARSE_DEMO_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Debug, Default, Serialize)]
 pub struct QueryMeta {
     pub row_count: Option<usize>,
@@ -107,7 +128,7 @@ impl ToolResult {
         }
     }
 
-    fn rows(data: Vec<Value>, original_row_count: usize, sampled: bool) -> Self {
+    fn rows_unchecked(data: Vec<Value>, original_row_count: usize, sampled: bool) -> Self {
         let row_count = data.len();
         Self {
             data: Value::Array(data),
@@ -117,6 +138,18 @@ impl ToolResult {
                 truncated: row_count < original_row_count,
                 sampled,
             },
+        }
+    }
+}
+
+pub struct DemoParseState {
+    permits: Arc<Semaphore>,
+}
+
+impl Default for DemoParseState {
+    fn default() -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(2)),
         }
     }
 }
@@ -153,53 +186,88 @@ pub struct QueryGrenadesRequest {
 }
 
 #[tauri::command]
-pub async fn get_demo_header(path: String) -> Result<ToolResult, String> {
-    run_blocking(move || get_demo_header_sync(&path)).await
+pub async fn get_demo_header(
+    state: State<'_, DemoParseState>,
+    path: String,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || get_demo_header_sync(&path)).await
 }
 
 #[tauri::command]
-pub async fn get_player_info(path: String) -> Result<ToolResult, String> {
-    run_blocking(move || get_player_info_sync(&path)).await
+pub async fn get_player_info(
+    state: State<'_, DemoParseState>,
+    path: String,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || get_player_info_sync(&path)).await
 }
 
 #[tauri::command]
-pub async fn list_game_events(path: String) -> Result<ToolResult, String> {
-    run_blocking(move || list_game_events_sync(&path)).await
+pub async fn list_game_events(
+    state: State<'_, DemoParseState>,
+    path: String,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || list_game_events_sync(&path)).await
 }
 
 #[tauri::command]
-pub async fn query_events(request: QueryEventsRequest) -> Result<ToolResult, String> {
-    run_blocking(move || query_events_sync(request)).await
+pub async fn query_events(
+    state: State<'_, DemoParseState>,
+    request: QueryEventsRequest,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || query_events_sync(request)).await
 }
 
 #[tauri::command]
-pub async fn query_ticks(request: QueryTicksRequest) -> Result<ToolResult, String> {
-    run_blocking(move || query_ticks_sync(request)).await
+pub async fn query_ticks(
+    state: State<'_, DemoParseState>,
+    request: QueryTicksRequest,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || query_ticks_sync(request)).await
 }
 
 #[tauri::command]
-pub async fn query_grenades(request: QueryGrenadesRequest) -> Result<ToolResult, String> {
-    run_blocking(move || query_grenades_sync(request)).await
+pub async fn query_grenades(
+    state: State<'_, DemoParseState>,
+    request: QueryGrenadesRequest,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || query_grenades_sync(request)).await
 }
 
 #[tauri::command]
-pub async fn get_round_summary(path: String) -> Result<ToolResult, String> {
-    run_blocking(move || get_round_summary_sync(&path)).await
+pub async fn get_round_summary(
+    state: State<'_, DemoParseState>,
+    path: String,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || get_round_summary_sync(&path)).await
 }
 
 #[tauri::command]
-pub async fn get_economy_analysis(path: String) -> Result<ToolResult, String> {
-    run_blocking(move || get_economy_analysis_sync(&path)).await
+pub async fn get_economy_analysis(
+    state: State<'_, DemoParseState>,
+    path: String,
+) -> Result<ToolResult, String> {
+    run_blocking(state, move || get_economy_analysis_sync(&path)).await
 }
 
-async fn run_blocking<F>(operation: F) -> Result<ToolResult, String>
+async fn run_blocking<F>(
+    state: State<'_, DemoParseState>,
+    operation: F,
+) -> Result<ToolResult, String>
 where
     F: FnOnce() -> AppResult<ToolResult> + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(operation)
+    let permit = state
+        .permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "demo parser concurrency limiter closed".to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(operation)
         .await
         .map_err(|error| format!("background parser task failed: {error}"))?
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    drop(permit);
+    result
 }
 
 fn get_demo_header_sync(path: &str) -> AppResult<ToolResult> {
@@ -228,7 +296,7 @@ fn get_player_info_sync(path: &str) -> AppResult<ToolResult> {
     };
     let rows = to_value_array(players)?;
     let count = rows.len();
-    Ok(ToolResult::rows(rows, count, false))
+    bounded_rows(rows, count, false)
 }
 
 fn list_game_events_sync(path: &str) -> AppResult<ToolResult> {
@@ -243,22 +311,28 @@ fn list_game_events_sync(path: &str) -> AppResult<ToolResult> {
 }
 
 fn query_events_sync(request: QueryEventsRequest) -> AppResult<ToolResult> {
+    validate_filters(request.where_filter.as_ref())?;
     let rows = parse_event_rows(
         &request.path,
         request.event_names,
         request.player_props.unwrap_or_default(),
         request.other_props.unwrap_or_default(),
     )?;
-    let filtered: Vec<Value> = match request.where_filter {
-        Some(filters) => rows
-            .into_iter()
-            .filter(|row| matches_filters(row, &filters))
-            .collect(),
-        None => rows,
-    };
-    let original = filtered.len();
-    let data = filtered.into_iter().take(MAX_EVENT_ROWS).collect();
-    Ok(ToolResult::rows(data, original, false))
+    let mut original = 0;
+    let mut data = Vec::with_capacity(rows.len().min(MAX_EVENT_ROWS));
+    for row in rows {
+        if request
+            .where_filter
+            .as_ref()
+            .is_none_or(|filters| matches_filters(&row, filters))
+        {
+            original += 1;
+            if data.len() < MAX_EVENT_ROWS {
+                data.push(row);
+            }
+        }
+    }
+    bounded_rows(data, original, false)
 }
 
 fn query_ticks_sync(request: QueryTicksRequest) -> AppResult<ToolResult> {
@@ -290,7 +364,7 @@ fn query_ticks_sync(request: QueryTicksRequest) -> AppResult<ToolResult> {
     let original = rows.len();
     let sampled = original > limit;
     let rows = equidistant_sample(rows, limit);
-    Ok(ToolResult::rows(rows, original, sampled))
+    bounded_rows(rows, original, sampled)
 }
 
 fn query_grenades_sync(request: QueryGrenadesRequest) -> AppResult<ToolResult> {
@@ -311,40 +385,48 @@ fn query_grenades_sync(request: QueryGrenadesRequest) -> AppResult<ToolResult> {
     let rows = dataframe_rows(&output)?;
     let original = rows.len();
     let rows = rows.into_iter().take(MAX_EVENT_ROWS).collect();
-    Ok(ToolResult::rows(rows, original, false))
+    bounded_rows(rows, original, false)
 }
 
 fn get_round_summary_sync(path: &str) -> AppResult<ToolResult> {
     let events = parse_event_rows(
         path,
-        vec!["round_end".to_string(), "player_death".to_string()],
+        vec![
+            "round_end".to_string(),
+            "player_death".to_string(),
+            "round_freeze_end".to_string(),
+        ],
         vec!["team_num".to_string()],
         vec![
             "total_rounds_played".to_string(),
             "is_warmup_period".to_string(),
         ],
     )?;
-    let economy_result = get_economy_analysis_sync(path)?;
-    let economy_by_round = index_by_round(economy_result.data);
+    let economy_rows = aggregate_economy(path, &events)?;
+    let economy_by_round = index_by_round(&economy_rows);
     let mut rounds: BTreeMap<i64, RoundAccumulator> = BTreeMap::new();
 
-    for event in events {
+    for event in &events {
         if event.get("is_warmup_period").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let Some(total_rounds_played) = event_round(&event) else {
+        let event_name = event.get("event_name").and_then(Value::as_str);
+        if !matches!(event_name, Some("round_end" | "player_death")) {
+            continue;
+        }
+        let Some(total_rounds_played) = event_round(event) else {
             continue;
         };
         let accumulator = rounds.entry(total_rounds_played).or_default();
-        match event.get("event_name").and_then(Value::as_str) {
+        match event_name {
             Some("round_end") => {
                 accumulator.winner = event.get("winner").cloned().unwrap_or(Value::Null);
                 accumulator.reason = event.get("reason").cloned().unwrap_or(Value::Null);
                 accumulator.end_tick = event.get("tick").and_then(Value::as_i64);
             }
-            Some("player_death") if is_counted_kill(&event) => {
+            Some("player_death") if is_counted_kill(event) => {
                 accumulator.kills.push(select_fields(
-                    &event,
+                    event,
                     &[
                         "tick",
                         "user_name",
@@ -384,7 +466,7 @@ fn get_round_summary_sync(path: &str) -> AppResult<ToolResult> {
         })
         .collect();
     let count = rows.len();
-    Ok(ToolResult::rows(rows, count, false))
+    bounded_rows(rows, count, false)
 }
 
 fn get_economy_analysis_sync(path: &str) -> AppResult<ToolResult> {
@@ -397,8 +479,15 @@ fn get_economy_analysis_sync(path: &str) -> AppResult<ToolResult> {
             "is_warmup_period".to_string(),
         ],
     )?;
-    let freeze_ticks: Vec<(i32, i64)> = freeze_events
+    let rows = aggregate_economy(path, &freeze_events)?;
+    let count = rows.len();
+    bounded_rows(rows, count, false)
+}
+
+fn aggregate_economy(path: &str, events: &[Value]) -> AppResult<Vec<Value>> {
+    let freeze_ticks: Vec<(i32, i64)> = events
         .iter()
+        .filter(|event| event.get("event_name").and_then(Value::as_str) == Some("round_freeze_end"))
         .filter(|event| event.get("is_warmup_period").and_then(Value::as_bool) != Some(true))
         .filter_map(|event| {
             Some((
@@ -408,7 +497,7 @@ fn get_economy_analysis_sync(path: &str) -> AppResult<ToolResult> {
         })
         .collect();
     if freeze_ticks.is_empty() {
-        return Ok(ToolResult::rows(vec![], 0, false));
+        return Ok(vec![]);
     }
 
     let tick_to_round: HashMap<i32, i64> = freeze_ticks.iter().copied().collect();
@@ -446,7 +535,7 @@ fn get_economy_analysis_sync(path: &str) -> AppResult<ToolResult> {
         }
     }
 
-    let rows: Vec<Value> = rounds
+    Ok(rounds
         .into_iter()
         .map(|(total_rounds_played, economy)| {
             json!({
@@ -456,9 +545,7 @@ fn get_economy_analysis_sync(path: &str) -> AppResult<ToolResult> {
                 "ct": economy.ct.to_value(),
             })
         })
-        .collect();
-    let count = rows.len();
-    Ok(ToolResult::rows(rows, count, false))
+        .collect())
 }
 
 fn parse_event_rows(
@@ -539,6 +626,8 @@ fn base_settings(huffman: &Vec<(u8, u8)>) -> ParserInputs<'_> {
 }
 
 fn parse_demo(mmap: &Mmap, settings: ParserInputs<'_>) -> AppResult<DemoOutput> {
+    #[cfg(test)]
+    PARSE_DEMO_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut parser = Parser::new(settings, ParsingMode::Normal);
     parser
         .parse_demo(mmap)
@@ -597,6 +686,7 @@ fn validate_event_names(names: &[String]) -> AppResult<()> {
             "event names may only contain ASCII letters, digits, and underscores".to_string(),
         ));
     }
+    validate_no_duplicates(names, "event names")?;
     Ok(())
 }
 
@@ -617,6 +707,36 @@ fn validate_properties(values: &[String], allowed: &[&str], kind: &str) -> AppRe
             invalid.join(", ")
         )));
     }
+    validate_no_duplicates(values, &format!("{kind} properties"))?;
+    Ok(())
+}
+
+fn validate_no_duplicates(values: &[String], label: &str) -> AppResult<()> {
+    let mut seen = HashSet::new();
+    if let Some(duplicate) = values.iter().find(|value| !seen.insert(value.as_str())) {
+        return Err(AppError::InvalidInput(format!(
+            "duplicate {label} are not allowed: {duplicate}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_filters(filters: Option<&HashMap<String, Value>>) -> AppResult<()> {
+    let Some(filters) = filters else {
+        return Ok(());
+    };
+    for (key, value) in filters {
+        if !FILTER_FIELDS.contains(&key.as_str()) {
+            return Err(AppError::InvalidInput(format!(
+                "unsupported where field: {key}"
+            )));
+        }
+        if !value.is_null() && !value.is_boolean() && !value.is_number() && !value.is_string() {
+            return Err(AppError::InvalidInput(format!(
+                "where field {key} must be a string, number, boolean, or null"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -633,14 +753,26 @@ fn property_name_map(real: &[String], friendly: &[String]) -> AHashMap<String, S
 }
 
 fn parse_steam_ids(values: Vec<String>) -> AppResult<Vec<u64>> {
-    values
+    if values.len() > MAX_STEAM_IDS {
+        return Err(AppError::InvalidInput(format!(
+            "query_ticks accepts at most {MAX_STEAM_IDS} Steam IDs"
+        )));
+    }
+    let parsed: Vec<u64> = values
         .into_iter()
         .map(|value| {
             value
                 .parse::<u64>()
                 .map_err(|_| AppError::InvalidInput(format!("invalid Steam ID: {value}")))
         })
-        .collect()
+        .collect::<AppResult<_>>()?;
+    let mut seen = HashSet::new();
+    if let Some(duplicate) = parsed.iter().find(|value| !seen.insert(**value)) {
+        return Err(AppError::InvalidInput(format!(
+            "duplicate Steam IDs are not allowed: {duplicate}"
+        )));
+    }
+    Ok(parsed)
 }
 
 fn matches_filters(row: &Value, filters: &HashMap<String, Value>) -> bool {
@@ -654,13 +786,63 @@ fn equidistant_sample(rows: Vec<Value>, limit: usize) -> Vec<Value> {
     if rows.len() <= limit {
         return rows;
     }
-    if limit == 1 {
-        return rows.into_iter().take(1).collect();
-    }
-    let last = rows.len() - 1;
-    (0..limit)
-        .map(|index| rows[index * last / (limit - 1)].clone())
+    equidistant_indices(rows.len(), limit)
+        .into_iter()
+        .map(|index| rows[index].clone())
         .collect()
+}
+
+fn equidistant_indices(row_count: usize, limit: usize) -> Vec<usize> {
+    if limit == 0 || row_count == 0 {
+        return vec![];
+    }
+    if limit >= row_count {
+        return (0..row_count).collect();
+    }
+    if limit == 1 {
+        return vec![0];
+    }
+    let last = row_count - 1;
+    (0..limit).map(|index| index * last / (limit - 1)).collect()
+}
+
+fn bounded_rows(
+    mut rows: Vec<Value>,
+    original_row_count: usize,
+    mut sampled: bool,
+) -> AppResult<ToolResult> {
+    let data_budget = MAX_SERIALIZED_ROWS_BYTES - ROW_METADATA_RESERVE_BYTES;
+    let mut target = rows.len();
+    let mut serialized_size = serialized_sample_size(&rows, target)?;
+    while serialized_size > data_budget && target > 0 {
+        let scaled = target.saturating_mul(data_budget) / serialized_size;
+        target = scaled.min(target - 1);
+        serialized_size = serialized_sample_size(&rows, target)?;
+    }
+    if target < rows.len() {
+        rows = equidistant_sample(rows, target);
+        sampled = true;
+    }
+    let result = ToolResult::rows_unchecked(rows, original_row_count, sampled);
+    let serialized_size = serde_json::to_vec(&result)
+        .map_err(|error| AppError::Serialization(error.to_string()))?
+        .len();
+    if serialized_size > MAX_SERIALIZED_ROWS_BYTES {
+        return Err(AppError::Serialization(
+            "bounded row result exceeded its serialization budget".to_string(),
+        ));
+    }
+    Ok(result)
+}
+
+fn serialized_sample_size(rows: &[Value], limit: usize) -> AppResult<usize> {
+    let selected: Vec<&Value> = equidistant_indices(rows.len(), limit)
+        .into_iter()
+        .map(|index| &rows[index])
+        .collect();
+    serde_json::to_vec(&selected)
+        .map(|serialized| serialized.len())
+        .map_err(|error| AppError::Serialization(error.to_string()))
 }
 
 fn serialize_scalar<T: Serialize>(value: T) -> AppResult<ToolResult> {
@@ -703,7 +885,7 @@ fn is_counted_kill(event: &Value) -> bool {
     }
     let attacker_team = event.get("attacker_team_num").and_then(number_as_i64);
     let victim_team = event.get("user_team_num").and_then(number_as_i64);
-    attacker_team.is_none() || victim_team.is_none() || attacker_team != victim_team
+    matches!((attacker_team, victim_team), (Some(attacker), Some(victim)) if attacker != victim)
 }
 
 fn select_fields(value: &Value, fields: &[&str]) -> Value {
@@ -716,11 +898,8 @@ fn select_fields(value: &Value, fields: &[&str]) -> Value {
     Value::Object(selected)
 }
 
-fn index_by_round(value: Value) -> HashMap<i64, Value> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
+fn index_by_round(rows: &[Value]) -> HashMap<i64, Value> {
+    rows.iter()
         .filter_map(|row| Some((row.get("round")?.as_i64()?, row.clone())))
         .collect()
 }
@@ -802,6 +981,10 @@ mod tests {
     fn event_names_are_restricted() {
         assert!(validate_event_names(&["player_death".to_string()]).is_ok());
         assert!(validate_event_names(&["player-death".to_string()]).is_err());
+        assert!(
+            validate_event_names(&["player_death".to_string(), "player_death".to_string()])
+                .is_err()
+        );
         assert!(validate_event_names(&[]).is_err());
     }
 
@@ -811,6 +994,32 @@ mod tests {
         assert!(
             validate_properties(&["unknown".to_string()], PLAYER_PROPERTIES, "player").is_err()
         );
+        assert!(validate_properties(
+            &["health".to_string(), "health".to_string()],
+            PLAYER_PROPERTIES,
+            "player"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn filters_use_an_explicit_allowlist_and_scalar_values() {
+        assert!(validate_filters(Some(&HashMap::from([("tick".to_string(), json!(100))]))).is_ok());
+        assert!(validate_filters(Some(&HashMap::from([(
+            "weapon".to_string(),
+            json!("ak47")
+        )])))
+        .is_err());
+        assert!(
+            validate_filters(Some(&HashMap::from([("tick".to_string(), json!([100]))]))).is_err()
+        );
+    }
+
+    #[test]
+    fn steam_ids_are_bounded_and_unique() {
+        assert!(parse_steam_ids(vec!["76561198000000000".to_string()]).is_ok());
+        assert!(parse_steam_ids(vec!["1".to_string(), "01".to_string()]).is_err());
+        assert!(parse_steam_ids(vec!["1".to_string(); MAX_STEAM_IDS + 1]).is_err());
     }
 
     #[test]
@@ -820,6 +1029,62 @@ mod tests {
             equidistant_sample(rows, 3),
             vec![json!(0), json!(4), json!(9)]
         );
+    }
+
+    #[test]
+    fn byte_budget_uses_equidistant_sampling_and_updates_metadata() {
+        let rows: Vec<Value> = (0..200)
+            .map(|index| json!({ "index": index, "payload": "x".repeat(20_000) }))
+            .collect();
+        let result = bounded_rows(rows, 200, false).expect("rows should fit after sampling");
+        let data = result
+            .data
+            .as_array()
+            .expect("row result should be an array");
+
+        assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_SERIALIZED_ROWS_BYTES);
+        assert!(result.meta.sampled);
+        assert!(result.meta.truncated);
+        assert_eq!(result.meta.original_row_count, Some(200));
+        assert_eq!(result.meta.row_count, Some(data.len()));
+        assert_eq!(
+            data.first().and_then(|row| row.get("index")),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            data.last().and_then(|row| row.get("index")),
+            Some(&json!(199))
+        );
+    }
+
+    #[test]
+    fn kills_require_known_opposing_teams() {
+        let valid = json!({
+            "attacker_steamid": "1",
+            "user_steamid": "2",
+            "attacker_team_num": 2,
+            "user_team_num": 3
+        });
+        let unknown_team = json!({
+            "attacker_steamid": "1",
+            "user_steamid": "2",
+            "user_team_num": 3
+        });
+        let team_kill = json!({
+            "attacker_steamid": "1",
+            "user_steamid": "2",
+            "attacker_team_num": 3,
+            "user_team_num": 3
+        });
+
+        assert!(is_counted_kill(&valid));
+        assert!(!is_counted_kill(&unknown_team));
+        assert!(!is_counted_kill(&team_kill));
+    }
+
+    #[test]
+    fn parser_state_allows_two_heavy_operations() {
+        assert_eq!(DemoParseState::default().permits.available_permits(), 2);
     }
 
     #[test]
@@ -851,8 +1116,14 @@ mod tests {
         .expect("fixture events should parse");
         assert!(events.meta.original_row_count.unwrap_or_default() > 0);
 
+        PARSE_DEMO_CALLS.store(0, Ordering::Relaxed);
         let rounds = get_round_summary_sync(&path).expect("fixture round summary should parse");
         assert!(rounds.meta.original_row_count.unwrap_or_default() > 0);
+        assert_eq!(PARSE_DEMO_CALLS.load(Ordering::Relaxed), 2);
+
+        let economy =
+            get_economy_analysis_sync(&path).expect("fixture economy analysis should parse");
+        assert!(economy.meta.original_row_count.unwrap_or_default() > 0);
 
         let grenades = query_grenades_sync(QueryGrenadesRequest {
             path,
