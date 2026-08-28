@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   ArrowIcon,
@@ -8,7 +8,14 @@ import {
 } from "../app/display";
 import { PROVIDER_LABELS, type ProviderDraft } from "../app/state";
 import type { ChatEntry } from "../app/types";
+import { markdownUrlTransform } from "../app/markdown";
 import type { Translator } from "../i18n";
+
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ node: _node, ...props }) => (
+    <a {...props} target="_blank" rel="noopener noreferrer" />
+  ),
+};
 
 export function Conversation({
   messages,
@@ -81,7 +88,11 @@ export function Conversation({
               </div>
               <div className="message-body">
                 {message.role === "assistant" ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    urlTransform={markdownUrlTransform}
+                    components={MARKDOWN_COMPONENTS}
+                  >
                     {message.content}
                   </ReactMarkdown>
                 ) : (

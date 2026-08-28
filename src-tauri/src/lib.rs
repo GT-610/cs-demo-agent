@@ -4,8 +4,10 @@ mod http;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let http_state = http::HttpState::new().expect("failed to initialize provider HTTP client");
     tauri::Builder::default()
         .manage(demo::DemoParseState::default())
+        .manage(http_state)
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             demo::get_demo_header,
