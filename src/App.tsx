@@ -94,7 +94,15 @@ export function App() {
       </Box>
 
       {workspace.page === "settings" ? (
-        <Box sx={{ gridColumn: { xs: 1, md: "2 / -1" }, gridRow: 2, minWidth: 0, minHeight: 0 }}>
+        <Box
+          sx={{
+            gridColumn: { xs: 1, md: "2 / -1" },
+            gridRow: 2,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
           <SettingsPage settings={workspace.settings} updateSettings={workspace.setSettings} t={t} />
         </Box>
       ) : (

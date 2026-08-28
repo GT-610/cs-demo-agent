@@ -34,7 +34,18 @@ export function SettingsPage({
   t: Translator;
 }) {
   return (
-    <Box component="main" sx={{ minWidth: 0, minHeight: 0, overflow: "auto" }}>
+    <Box
+      component="main"
+      sx={{
+        width: "100%",
+        height: "100%",
+        minWidth: 0,
+        minHeight: 0,
+        overflowX: "hidden",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+      }}
+    >
       <Box sx={{ width: "min(850px, calc(100% - 40px))", mx: "auto", py: { xs: 3, md: 4.5 } }}>
         <Typography variant="overline">{t("settings.eyebrow")}</Typography>
         <Typography component="h2" sx={{ mt: 0.7, color: "#e2e6e2", fontSize: "1.35rem", fontWeight: 680 }}>
