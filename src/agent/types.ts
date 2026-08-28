@@ -78,7 +78,7 @@ export interface ProviderRequest {
 
 export interface ResponsesContinuation {
   provider: "openai-responses";
-  responseId: string;
+  inputItems: JsonValue[];
   acknowledgedMessages: number;
 }
 
@@ -88,7 +88,6 @@ export interface ProviderTurn {
   text: string;
   toolCalls: ToolCall[];
   continuation?: ProviderContinuation;
-  raw: JsonValue;
 }
 
 export interface HttpJsonRequest {
@@ -118,7 +117,6 @@ export type ToolExecutor = (
 
 export type AgentEvent =
   | { type: "assistant-start"; iteration: number }
-  | { type: "assistant-text"; text: string; iteration: number }
   | { type: "tool-start"; call: ToolCall; iteration: number }
   | {
       type: "tool-result";

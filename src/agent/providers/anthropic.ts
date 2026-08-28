@@ -131,7 +131,6 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     return {
       ...parseContent(body),
-      raw: body,
     };
   }
 }

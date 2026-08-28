@@ -92,7 +92,3 @@ export function extractTextContent(value: JsonValue | undefined): string {
     .filter(Boolean)
     .join("\n");
 }
-
-export function jsonString(value: JsonValue): string {
-  return JSON.stringify(value);
-}

@@ -6,6 +6,7 @@ import type {
   HttpTransport,
   JsonObject,
   JsonSchema,
+  JsonValue,
   ProviderConfig,
 } from "../types";
 import { DEMO_TOOL_SPECS } from "../tools";
@@ -110,7 +111,7 @@ describe("OpenAiChatAdapter", () => {
 });
 
 describe("OpenAiResponsesAdapter", () => {
-  test("continues with previous_response_id and function_call_output", async () => {
+  test("replays complete output items without server-side response state", async () => {
     const requests: HttpJsonRequest[] = [];
     const adapter = new OpenAiResponsesAdapter(
       queuedTransport(
@@ -118,8 +119,12 @@ describe("OpenAiResponsesAdapter", () => {
           {
             status: 200,
             body: {
-              id: "resp-1",
               output: [
+                {
+                  type: "reasoning",
+                  id: "reasoning-1",
+                  encrypted_content: "encrypted-reasoning",
+                },
                 {
                   type: "function_call",
                   call_id: "call-1",
@@ -132,10 +137,24 @@ describe("OpenAiResponsesAdapter", () => {
           {
             status: 200,
             body: {
-              id: "resp-2",
+              output: [
+                {
+                  type: "function_call",
+                  call_id: "call-2",
+                  name: "get_player_info",
+                  arguments: "{}",
+                  phase: "commentary",
+                },
+              ],
+            },
+          },
+          {
+            status: 200,
+            body: {
               output: [
                 {
                   type: "message",
+                  phase: "final_answer",
                   content: [{ type: "output_text", text: "Map: de_nuke" }],
                 },
               ],
@@ -172,15 +191,65 @@ describe("OpenAiResponsesAdapter", () => {
       tools: DEMO_TOOL_SPECS,
       continuation: first.continuation,
     });
+    const finalMessages: AgentMessage[] = [
+      ...continuedMessages,
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: second.toolCalls,
+      },
+      {
+        role: "tool",
+        toolCallId: "call-2",
+        name: "get_player_info",
+        content: '{"data":[{"name":"Player"}]}',
+      },
+    ];
+    const third = await adapter.generate({
+      config,
+      messages: finalMessages,
+      tools: DEMO_TOOL_SPECS,
+      continuation: second.continuation,
+    });
 
-    expect(second.text).toBe("Map: de_nuke");
+    expect(third.text).toBe("Map: de_nuke");
+    const firstBody = requests[0]?.body as JsonObject;
+    expect(firstBody.store).toBe(false);
+    expect(firstBody.previous_response_id).toBeUndefined();
     const secondBody = requests[1]?.body as JsonObject;
-    expect(secondBody.previous_response_id).toBe("resp-1");
     expect(secondBody.input).toEqual([
+      { role: "user", content: "What map is this?" },
+      {
+        type: "reasoning",
+        id: "reasoning-1",
+        encrypted_content: "encrypted-reasoning",
+      },
+      {
+        type: "function_call",
+        call_id: "call-1",
+        name: "get_demo_header",
+        arguments: "{}",
+      },
       {
         type: "function_call_output",
         call_id: "call-1",
         output: '{"data":{"map_name":"de_nuke"}}',
+      },
+    ]);
+    const thirdBody = requests[2]?.body as JsonObject;
+    expect(thirdBody.input).toEqual([
+      ...(secondBody.input as JsonValue[]),
+      {
+        type: "function_call",
+        call_id: "call-2",
+        name: "get_player_info",
+        arguments: "{}",
+        phase: "commentary",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-2",
+        output: '{"data":[{"name":"Player"}]}',
       },
     ]);
   });

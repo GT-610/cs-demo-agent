@@ -11,13 +11,16 @@ import type {
 class SequenceAdapter implements ProviderAdapter {
   readonly requests: ProviderRequest[] = [];
 
-  constructor(private readonly turns: ProviderTurn[]) {}
+  constructor(private readonly turns: Array<ProviderTurn | Error>) {}
 
   async generate(request: ProviderRequest): Promise<ProviderTurn> {
     this.requests.push(request);
     const turn = this.turns.shift();
     if (!turn) {
       throw new Error("No provider turn queued");
+    }
+    if (turn instanceof Error) {
+      throw turn;
     }
     return turn;
   }
@@ -42,12 +45,10 @@ describe("AgentRuntime", () => {
             arguments: "{}",
           },
         ],
-        raw: {},
       },
       {
         text: "地图是 de_ancient。",
         toolCalls: [],
-        raw: {},
       },
     ]);
     const calls: Array<{ name: string; input: JsonObject }> = [];
@@ -88,12 +89,10 @@ describe("AgentRuntime", () => {
             arguments: "not-json",
           },
         ],
-        raw: {},
       },
       {
         text: "工具参数无效，无法查询。",
         toolCalls: [],
-        raw: {},
       },
     ]);
     let executed = false;
@@ -124,7 +123,6 @@ describe("AgentRuntime", () => {
       toolCalls: [
         { id: "loop", name: "get_demo_header", arguments: "{}" },
       ],
-      raw: {},
     };
     const adapter = new SequenceAdapter([turn, turn]);
     const runtime = new AgentRuntime({
@@ -136,6 +134,111 @@ describe("AgentRuntime", () => {
       executeTool: async () => ({ data: {}, meta: {} }),
     });
 
-    expect(runtime.send("loop")).rejects.toThrow("2 tool iterations");
+    await expect(runtime.send("loop")).rejects.toThrow("2 tool iterations");
+    expect(runtime.history).toEqual([
+      { role: "system", content: "Use evidence." },
+    ]);
+  });
+
+  test("rejects concurrent sends and protects an in-flight reset", async () => {
+    let finish!: (turn: ProviderTurn) => void;
+    const adapter: ProviderAdapter = {
+      generate: () =>
+        new Promise<ProviderTurn>((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({}),
+    });
+
+    const first = runtime.send("first");
+    await expect(runtime.send("second")).rejects.toThrow(
+      "already in progress",
+    );
+    expect(() => runtime.reset()).toThrow("while a request is in progress");
+    finish({ text: "done", toolCalls: [] });
+    await expect(first).resolves.toMatchObject({ text: "done" });
+  });
+
+  test("rolls back messages and continuation after a later provider failure", async () => {
+    const firstContinuation = {
+      provider: "openai-responses" as const,
+      inputItems: [{ role: "user", content: "first" }],
+      acknowledgedMessages: 2,
+    };
+    const transientContinuation = {
+      provider: "openai-responses" as const,
+      inputItems: [{ role: "user", content: "second" }],
+      acknowledgedMessages: 4,
+    };
+    const adapter = new SequenceAdapter([
+      { text: "first answer", toolCalls: [], continuation: firstContinuation },
+      {
+        text: "",
+        toolCalls: [{ id: "call", name: "get_demo_header", arguments: "{}" }],
+        continuation: transientContinuation,
+      },
+      new Error("provider unavailable"),
+      { text: "recovered", toolCalls: [] },
+    ]);
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({ data: {}, meta: {} }),
+    });
+
+    await runtime.send("first");
+    const stableHistory = runtime.history;
+    await expect(runtime.send("second")).rejects.toThrow("provider unavailable");
+    expect(runtime.history).toEqual(stableHistory);
+
+    await runtime.send("third");
+    expect(adapter.requests[3]?.continuation).toEqual(firstContinuation);
+  });
+
+  test("returns history and reply message snapshots", async () => {
+    const adapter = new SequenceAdapter([
+      { text: "one", toolCalls: [] },
+      { text: "two", toolCalls: [] },
+    ]);
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({}),
+    });
+
+    const reply = await runtime.send("first");
+    const history = runtime.history;
+    await runtime.send("second");
+
+    expect(reply.messages).toHaveLength(3);
+    expect(history).toHaveLength(3);
+    expect(runtime.history).toHaveLength(5);
+  });
+
+  test("rolls back when an event callback throws", async () => {
+    const runtime = new AgentRuntime({
+      adapter: new SequenceAdapter([{ text: "answer", toolCalls: [] }]),
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({}),
+    });
+
+    await expect(
+      runtime.send("question", () => {
+        throw new Error("event callback failed");
+      }),
+    ).rejects.toThrow("event callback failed");
+    expect(runtime.history).toHaveLength(1);
   });
 });

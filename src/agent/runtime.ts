@@ -42,6 +42,7 @@ export class AgentRuntime {
   private readonly maxIterations: number;
   private messages: AgentMessage[];
   private continuation?: ProviderContinuation;
+  private inFlight = false;
 
   constructor(options: AgentRuntimeOptions) {
     this.adapter = options.adapter;
@@ -54,10 +55,13 @@ export class AgentRuntime {
   }
 
   get history(): readonly AgentMessage[] {
-    return this.messages;
+    return this.messages.slice();
   }
 
   reset(): void {
+    if (this.inFlight) {
+      throw new Error("Cannot reset the agent while a request is in progress");
+    }
     this.messages = [{ role: "system", content: this.systemPrompt }];
     this.continuation = undefined;
   }
@@ -66,19 +70,26 @@ export class AgentRuntime {
     userText: string,
     onEvent: AgentEventHandler = () => undefined,
   ): Promise<AgentReply> {
+    if (this.inFlight) {
+      throw new Error("An agent request is already in progress");
+    }
+
     const text = userText.trim();
     if (!text) {
       throw new Error("A user message is required");
     }
 
-    this.messages.push({ role: "user", content: text });
+    const messageCount = this.messages.length;
+    const previousContinuation = this.continuation;
+    this.inFlight = true;
 
     try {
+      this.messages.push({ role: "user", content: text });
       for (let iteration = 1; iteration <= this.maxIterations; iteration += 1) {
         onEvent({ type: "assistant-start", iteration });
         const turn = await this.adapter.generate({
           config: this.config,
-          messages: this.messages,
+          messages: this.messages.slice(),
           tools: this.tools,
           continuation: this.continuation,
         });
@@ -91,12 +102,8 @@ export class AgentRuntime {
         };
         this.messages.push(assistantMessage);
 
-        if (turn.text) {
-          onEvent({ type: "assistant-text", text: turn.text, iteration });
-        }
-
         if (turn.toolCalls.length === 0) {
-          return { text: turn.text, messages: this.history };
+          return { text: turn.text, messages: this.messages.slice() };
         }
 
         const results = await Promise.all(
@@ -120,9 +127,17 @@ export class AgentRuntime {
         `Agent stopped after ${this.maxIterations} tool iterations without a final answer`,
       );
     } catch (error) {
+      this.messages.length = messageCount;
+      this.continuation = previousContinuation;
       const message = error instanceof Error ? error.message : String(error);
-      onEvent({ type: "error", message });
+      try {
+        onEvent({ type: "error", message });
+      } catch {
+        // Preserve the error that caused the turn to roll back.
+      }
       throw error;
+    } finally {
+      this.inFlight = false;
     }
   }
 

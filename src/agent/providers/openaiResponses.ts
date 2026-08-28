@@ -26,8 +26,8 @@ function isContinuation(value: unknown): value is ResponsesContinuation {
     typeof value === "object" &&
     "provider" in value &&
     value.provider === "openai-responses" &&
-    "responseId" in value &&
-    typeof value.responseId === "string" &&
+    "inputItems" in value &&
+    Array.isArray(value.inputItems) &&
     "acknowledgedMessages" in value &&
     typeof value.acknowledgedMessages === "number"
   );
@@ -105,10 +105,13 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       ? request.continuation
       : undefined;
     const startingIndex = continuation?.acknowledgedMessages ?? 0;
-    const input = request.messages
-      .slice(startingIndex)
-      .map((message) => toInputItem(message, !!continuation))
-      .filter((item): item is JsonValue => item !== undefined);
+    const input = [
+      ...(continuation?.inputItems ?? []),
+      ...request.messages
+        .slice(startingIndex)
+        .map((message) => toInputItem(message, !!continuation))
+        .filter((item): item is JsonValue => item !== undefined),
+    ];
     const instructions = request.messages
       .filter((message) => message.role === "system")
       .map((message) => message.content)
@@ -128,25 +131,18 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         tools: request.tools.map(toResponsesTool),
         tool_choice: "auto",
         parallel_tool_calls: true,
-        store: true,
-        ...(continuation
-          ? { previous_response_id: continuation.responseId }
-          : {}),
+        store: false,
       },
     });
     const body = assertSuccess(response);
     const parsed = parseOutput(body);
-    const responseId = asString(body.id);
-    if (!responseId) {
-      throw new Error("Responses API response did not include an id");
-    }
+    const output = asArray(body.output);
 
     return {
       ...parsed,
-      raw: body,
       continuation: {
         provider: "openai-responses",
-        responseId,
+        inputItems: [...input, ...output],
         acknowledgedMessages: request.messages.length,
       },
     };

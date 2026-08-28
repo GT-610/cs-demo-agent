@@ -95,7 +95,6 @@ export class OpenAiChatAdapter implements ProviderAdapter {
     return {
       text: extractTextContent(message.content),
       toolCalls: parseToolCalls(message.tool_calls),
-      raw: body,
     };
   }
 }

@@ -51,7 +51,7 @@
 宿主对上游 LLM 做了适配，你收到的工具定义在不同 provider 下形态不同但语义一致：
 
 - **OpenAI Chat Completions** (`POST /v1/chat/completions`): `tools: [{type:"function", function:{name, description, parameters}}]`，调用在 `choices[0].message.tool_calls[].function.arguments` (JSON string)，结果以 `role:"tool", tool_call_id` 回传。
-- **OpenAI Responses** (`POST /v1/responses`): 新一代推荐端点，`tools` 为顶层 `function` Items，调用在 `output[]` 中 `type:"function_call"` (`call_id` + `name` + `arguments` string)，结果以 `type:"function_call_output", call_id` 回传；支持 `previous_response_id` 服务端链式多轮。`strict` 默认为 true。
+- **OpenAI Responses** (`POST /v1/responses`): 新一代推荐端点，`tools` 为顶层 `function` Items，调用在 `output[]` 中 `type:"function_call"` (`call_id` + `name` + `arguments` string)，结果以 `type:"function_call_output", call_id` 回传；平台使用 `store:false` 并在后续请求中回放完整 input/output items。`strict` 默认为 true。
 - **Anthropic Messages** (`POST /v1/messages`): `tools: [{name, description, input_schema}]`，调用为 `content[].type:"tool_use"` (`id`, `name`, `input` object)，结果为 `role:"user", content:[{type:"tool_result", tool_use_id, content}]`。支持 `tool_choice: {type:"auto"|"any"|"tool"}`。
 
 **你无需关心当前走哪个端点**，按宿主给你的工具定义正常调用即可；宿主会负责回填。并行工具调用默认允许。

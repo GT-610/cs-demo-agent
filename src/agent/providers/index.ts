@@ -20,7 +20,3 @@ export function createProviderAdapter(
       return new AnthropicAdapter(transport);
   }
 }
-
-export { AnthropicAdapter } from "./anthropic";
-export { OpenAiChatAdapter } from "./openaiChat";
-export { OpenAiResponsesAdapter } from "./openaiResponses";
