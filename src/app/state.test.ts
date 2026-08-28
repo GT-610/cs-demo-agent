@@ -3,7 +3,6 @@ import {
   changeProviderKind,
   createDefaultProvider,
   isProviderReady,
-  sessionKey,
 } from "./state";
 
 describe("application state helpers", () => {
@@ -35,15 +34,5 @@ describe("application state helpers", () => {
     expect(
       isProviderReady({ ...config, model: "gpt-test", baseUrl: "file:///tmp" }),
     ).toBe(false);
-  });
-
-  test("session identity changes with credentials without exposing storage", () => {
-    const config = {
-      ...createDefaultProvider("openai-responses"),
-      model: "gpt-test",
-    };
-    expect(sessionKey("match.dem", config)).not.toBe(
-      sessionKey("match.dem", { ...config, apiKey: "new-key" }),
-    );
   });
 });

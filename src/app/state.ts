@@ -50,14 +50,3 @@ export function isProviderReady(config: ProviderDraft): boolean {
     return false;
   }
 }
-
-export function sessionKey(path: string, config: ProviderDraft): string {
-  return JSON.stringify([
-    path,
-    config.kind,
-    config.baseUrl.trim(),
-    config.model.trim(),
-    config.apiKey,
-    config.maxOutputTokens,
-  ]);
-}
