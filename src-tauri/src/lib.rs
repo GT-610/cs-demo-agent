@@ -32,7 +32,6 @@ pub fn run() {
             demo::query_grenades,
             demo::get_round_summary,
             demo::get_economy_analysis,
-            http::send_http_json,
             http::stream_http_json,
             persistence::load_workspace,
             persistence::load_session,

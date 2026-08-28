@@ -40,28 +40,12 @@ pub struct HttpJsonRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Serialize)]
-pub struct HttpJsonResponse {
-    pub status: u16,
-    pub body: Value,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum HttpStreamEvent {
     Started { status: u16 },
     Data { data: Value },
     Done,
-}
-
-#[tauri::command]
-pub async fn send_http_json(
-    state: State<'_, HttpState>,
-    request: HttpJsonRequest,
-) -> Result<HttpJsonResponse, String> {
-    send_http_json_inner(&state.client, request)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -73,51 +57,6 @@ pub async fn stream_http_json(
     stream_http_json_inner(&state.client, request, &on_event)
         .await
         .map_err(|error| error.to_string())
-}
-
-async fn send_http_json_inner(
-    client: &Client,
-    request: HttpJsonRequest,
-) -> AppResult<HttpJsonResponse> {
-    let url = validate_url(&request.url)?;
-    let headers = validate_headers(request.headers)?;
-    let request_bytes = serde_json::to_vec(&request.body)
-        .map_err(|error| AppError::Serialization(error.to_string()))?;
-    if request_bytes.len() > MAX_REQUEST_BYTES {
-        return Err(AppError::InvalidInput(format!(
-            "provider request exceeds {MAX_REQUEST_BYTES} bytes"
-        )));
-    }
-
-    let timeout_ms = request.timeout_ms.clamp(1_000, 180_000);
-    let mut response = client
-        .post(url)
-        .headers(headers)
-        .body(request_bytes)
-        .timeout(Duration::from_millis(timeout_ms))
-        .send()
-        .await
-        .map_err(|error| AppError::Provider(error.to_string()))?;
-    let status = response.status();
-    validate_content_length(response.content_length())?;
-    let capacity = response
-        .content_length()
-        .unwrap_or_default()
-        .min(MAX_RESPONSE_BYTES as u64) as usize;
-    let mut bytes = Vec::with_capacity(capacity);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| AppError::Provider(error.to_string()))?
-    {
-        append_response_chunk(&mut bytes, &chunk)?;
-    }
-    let body = parse_response_body(status, &bytes)?;
-
-    Ok(HttpJsonResponse {
-        status: status.as_u16(),
-        body,
-    })
 }
 
 async fn stream_http_json_inner(
@@ -480,8 +419,10 @@ mod tests {
 
     #[test]
     fn sse_decoder_enforces_the_total_response_budget() {
-        let mut decoder = SseDecoder::default();
-        decoder.total_bytes = MAX_RESPONSE_BYTES;
+        let mut decoder = SseDecoder {
+            total_bytes: MAX_RESPONSE_BYTES,
+            ..SseDecoder::default()
+        };
         assert!(decoder.push(&[0]).is_err());
     }
 }
