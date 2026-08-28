@@ -119,3 +119,7 @@ This test covers the header, game events, round aggregation, and grenade traject
 ## Parser provenance
 
 The Rust parser core is vendored under `vendor/demoparser` from `demoparser2` commit `57f24c76776ac176e893833f3a5b4aad718a8196`. See `vendor/demoparser/NOTICE.md` for the vendoring scope and generated-source rationale.
+
+## License
+
+CS Demo Agent is distributed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the complete license text.
