@@ -1,79 +1,109 @@
 import { describe, expect, test } from "bun:test";
 import {
-  canSwitchModelFormat,
   createDefaultSettings,
+  createProviderProfile,
   getDefaultModel,
   getProviderProfile,
   isProviderReady,
   normalizeSettings,
   parseModelList,
+  removeProviderProfile,
+  settingsEqual,
   updateProviderProfile,
+  validateSettings,
 } from "./state";
 
 describe("application state helpers", () => {
-  test("provides one persistent profile for every API format", () => {
+  test("starts without any providers", () => {
     const settings = createDefaultSettings("en");
-    expect(settings.providers.map((profile) => profile.kind)).toEqual([
-      "openai-responses",
-      "openai-chat",
-      "anthropic",
-    ]);
-    expect(getProviderProfile(settings, "anthropic").baseUrl).toBe(
-      "https://api.anthropic.com/v1",
-    );
+    expect(settings.providers).toEqual([]);
+    expect(settings.defaultProviderId).toBeNull();
+    expect(getDefaultModel(settings)).toBe("");
   });
 
-  test("fills missing profiles when loading a legacy settings record", () => {
+  test("normalizes multiple providers that share an API format", () => {
+    const first = {
+      ...createProviderProfile("openai-chat", "provider-a"),
+      name: " First ",
+      baseUrl: " https://first.example.test/v1 ",
+      models: [" model-a "],
+    };
+    const second = {
+      ...createProviderProfile("openai-chat", "provider-b"),
+      name: "Second",
+      baseUrl: "https://second.example.test/v1",
+      models: ["model-b"],
+    };
     const settings = normalizeSettings(
       {
         locale: "zh-CN",
-        defaultProviderKind: "anthropic",
-        providers: [
-          {
-            kind: "anthropic",
-            baseUrl: "https://example.test",
-            apiKey: "key",
-            models: ["claude-test"],
-            maxOutputTokens: 2048,
-          },
-        ],
+        defaultProviderId: second.id,
+        providers: [first, second],
       },
       "en",
     );
-    expect(settings.providers).toHaveLength(3);
-    expect(getDefaultModel(settings)).toBe("claude-test");
+    expect(settings.providers).toHaveLength(2);
+    expect(settings.providers[0]?.name).toBe("First");
+    expect(settings.defaultProviderId).toBe("provider-b");
+    expect(getDefaultModel(settings)).toBe("model-b");
   });
 
-  test("normalizes model lists and profile updates", () => {
+  test("normalizes model lists and updates profiles by identifier", () => {
     expect(parseModelList("gpt-a, gpt-b\ngpt-a\n")).toEqual([
       "gpt-a",
       "gpt-b",
     ]);
+    const profile = createProviderProfile("openai-chat", "provider-a");
     const updated = updateProviderProfile(
-      createDefaultSettings("en"),
-      "openai-chat",
-      (profile) => ({ ...profile, models: [" custom ", "custom"] }),
+      {
+        locale: "en",
+        defaultProviderId: profile.id,
+        providers: [profile],
+      },
+      profile.id,
+      (current) => ({ ...current, models: ["custom"] }),
     );
-    expect(getProviderProfile(updated, "openai-chat").models).toEqual([
-      "custom",
-    ]);
+    expect(getProviderProfile(updated, profile.id)?.models).toEqual(["custom"]);
   });
 
-  test("requires a valid base URL and selected model", () => {
-    const profile = getProviderProfile(
-      createDefaultSettings("en"),
-      "openai-responses",
-    );
+  test("requires a selected provider, URL, and model", () => {
+    const profile = {
+      ...createProviderProfile("openai-responses", "provider-a"),
+      name: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      models: ["gpt-test"],
+    };
+    expect(isProviderReady(null, "gpt-test")).toBe(false);
     expect(isProviderReady(profile, "")).toBe(false);
     expect(isProviderReady(profile, "gpt-test")).toBe(true);
-    expect(
-      isProviderReady({ ...profile, baseUrl: "file:///tmp" }, "gpt-test"),
-    ).toBe(false);
+    expect(isProviderReady({ ...profile, baseUrl: "file:///tmp" }, "gpt-test")).toBe(false);
   });
 
-  test("keeps an existing session on its bound API format", () => {
-    expect(canSwitchModelFormat(null, "anthropic")).toBe(true);
-    expect(canSwitchModelFormat("openai-responses", "openai-responses")).toBe(true);
-    expect(canSwitchModelFormat("openai-responses", "anthropic")).toBe(false);
+  test("removing the default provider selects the next provider", () => {
+    const first = createProviderProfile("anthropic", "provider-a");
+    const second = createProviderProfile("openai-chat", "provider-b");
+    const settings = removeProviderProfile(
+      {
+        locale: "en",
+        defaultProviderId: first.id,
+        providers: [first, second],
+      },
+      first.id,
+    );
+    expect(settings.defaultProviderId).toBe(second.id);
+  });
+
+  test("validates complete providers and compares drafts", () => {
+    const empty = createDefaultSettings("en");
+    expect(validateSettings(empty)).toBeNull();
+    expect(settingsEqual(empty, { ...empty })).toBe(true);
+    const incomplete = createProviderProfile("anthropic", "provider-a");
+    expect(
+      validateSettings({
+        ...empty,
+        defaultProviderId: incomplete.id,
+        providers: [incomplete],
+      }),
+    ).toEqual({ type: "providerName" });
   });
 });

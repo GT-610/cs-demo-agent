@@ -8,6 +8,7 @@ import type {
   ProviderAdapter,
   ProviderConfig,
   ProviderContinuation,
+  StoredProviderContinuation,
   ToolCall,
   ToolExecutor,
   ToolMessage,
@@ -54,7 +55,10 @@ export class AgentRuntime {
     this.systemPrompt = options.systemPrompt;
     this.maxIterations = options.maxIterations ?? 12;
     this.messages = restoreMessages(options.initialState, this.systemPrompt);
-    this.continuation = cloneContinuation(options.initialState?.continuation);
+    this.continuation = restoreContinuation(
+      options.initialState?.continuation,
+      options.config,
+    );
   }
 
   get history(): readonly AgentMessage[] {
@@ -64,7 +68,7 @@ export class AgentRuntime {
   get state(): AgentRuntimeState {
     return {
       messages: cloneMessages(this.messages),
-      continuation: cloneContinuation(this.continuation),
+      continuation: storeContinuation(this.continuation, this.config),
     };
   }
 
@@ -225,6 +229,37 @@ function cloneContinuation(
   return {
     ...continuation,
     inputItems: structuredClone(continuation.inputItems),
+  };
+}
+
+function restoreContinuation(
+  continuation: StoredProviderContinuation | undefined,
+  config: ProviderConfig,
+): ProviderContinuation | undefined {
+  if (
+    !continuation ||
+    continuation.providerId !== config.providerId ||
+    continuation.providerKind !== config.kind ||
+    continuation.baseUrl !== config.baseUrl ||
+    continuation.model !== config.model
+  ) {
+    return undefined;
+  }
+  return cloneContinuation(continuation.value);
+}
+
+function storeContinuation(
+  continuation: ProviderContinuation | undefined,
+  config: ProviderConfig,
+): StoredProviderContinuation | undefined {
+  const value = cloneContinuation(continuation);
+  if (!value) return undefined;
+  return {
+    providerId: config.providerId,
+    providerKind: config.kind,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    value,
   };
 }
 

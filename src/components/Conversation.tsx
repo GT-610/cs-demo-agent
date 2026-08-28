@@ -44,7 +44,7 @@ export function Conversation({
   demoPath,
   providerReady,
   activeSession,
-  providerKind,
+  providerId,
   model,
   modelOptions,
   sending,
@@ -62,7 +62,7 @@ export function Conversation({
   demoPath: string;
   providerReady: boolean;
   activeSession: boolean;
-  providerKind: ModelOption["providerKind"];
+  providerId: string | null;
   model: string;
   modelOptions: ModelOption[];
   sending: boolean;
@@ -77,6 +77,9 @@ export function Conversation({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [modelAnchor, setModelAnchor] = useState<HTMLElement | null>(null);
+  const selectedOption = modelOptions.find(
+    (option) => option.providerId === providerId && option.model === model,
+  );
   useEffect(() => {
     const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;
@@ -200,7 +203,9 @@ export function Conversation({
                   }}
                 >
                   <Typography noWrap sx={{ fontSize: "inherit" }}>
-                    {model || t("provider.chooseModel")}
+                    {selectedOption
+                      ? `${selectedOption.providerName} · ${selectedOption.model}`
+                      : model || t("provider.chooseModel")}
                   </Typography>
                   <ExpandMoreRoundedIcon sx={{ ml: 0.35, fontSize: 15 }} />
                 </Button>
@@ -215,9 +220,9 @@ export function Conversation({
                   {modelOptions.map((option) => (
                     <MenuItem
                       selected={
-                        option.providerKind === providerKind && option.model === model
+                        option.providerId === providerId && option.model === model
                       }
-                      key={`${option.providerKind}:${option.model}`}
+                      key={`${option.providerId}:${option.model}`}
                       onClick={() => {
                         setModelAnchor(null);
                         void selectModel(option);
@@ -225,11 +230,9 @@ export function Conversation({
                     >
                       <Stack>
                         <Typography sx={{ fontSize: "0.7rem" }}>{option.model}</Typography>
-                        {!activeSession && (
-                          <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                            {PROVIDER_LABELS[option.providerKind]}
-                          </Typography>
-                        )}
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          {option.providerName} · {PROVIDER_LABELS[option.providerKind]}
+                        </Typography>
                       </Stack>
                     </MenuItem>
                   ))}

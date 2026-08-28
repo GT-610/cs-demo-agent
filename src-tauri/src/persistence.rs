@@ -14,6 +14,8 @@ const MAX_MESSAGE_CHARS: usize = 1_048_576;
 const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MESSAGES: usize = 10_000;
 const MAX_MODELS_PER_PROVIDER: usize = 32;
+const MAX_PROVIDERS: usize = 64;
+const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 pub struct DatabaseState {
     connection: Mutex<Connection>,
@@ -57,6 +59,8 @@ impl DatabaseState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredProviderSettings {
+    pub id: String,
+    pub name: String,
     pub kind: String,
     pub base_url: String,
     pub api_key: String,
@@ -68,7 +72,7 @@ pub struct StoredProviderSettings {
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
     pub locale: String,
-    pub default_provider_kind: String,
+    pub default_provider_id: Option<String>,
     pub providers: Vec<StoredProviderSettings>,
 }
 
@@ -78,7 +82,7 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub demo_path: String,
-    pub provider_kind: String,
+    pub provider_id: String,
     pub model: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -115,7 +119,7 @@ pub struct CreateSessionInput {
     pub id: String,
     pub title: String,
     pub demo_path: String,
-    pub provider_kind: String,
+    pub provider_id: String,
     pub model: String,
     pub created_at: i64,
 }
@@ -133,6 +137,7 @@ pub struct RenameSessionInput {
 pub struct SaveSessionContentInput {
     pub id: String,
     pub demo_path: String,
+    pub provider_id: String,
     pub model: String,
     pub messages: Vec<PersistedMessage>,
     pub runtime_state: Option<Value>,
@@ -219,13 +224,16 @@ fn initialize_connection(connection: &Connection) -> AppResult<()> {
                  api_key TEXT NOT NULL,
                  model TEXT NOT NULL,
                  max_output_tokens INTEGER NOT NULL,
-                 providers_json TEXT
+                 providers_json TEXT,
+                 default_provider_id TEXT,
+                 schema_version INTEGER NOT NULL DEFAULT 1
              );
              CREATE TABLE IF NOT EXISTS sessions (
                  id TEXT PRIMARY KEY,
                  title TEXT NOT NULL,
                  demo_path TEXT NOT NULL,
                  provider_kind TEXT NOT NULL DEFAULT 'openai-responses',
+                 provider_id TEXT NOT NULL DEFAULT '',
                  model TEXT NOT NULL DEFAULT '',
                  runtime_state TEXT,
                  created_at INTEGER NOT NULL,
@@ -245,41 +253,26 @@ fn initialize_connection(connection: &Connection) -> AppResult<()> {
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
     let _ = ensure_column(connection, "settings", "providers_json", "TEXT")?;
-    let provider_kind_added = ensure_column(
+    let _ = ensure_column(connection, "settings", "default_provider_id", "TEXT")?;
+    let _ = ensure_column(
+        connection,
+        "settings",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    let _ = ensure_column(
         connection,
         "sessions",
         "provider_kind",
         "TEXT NOT NULL DEFAULT 'openai-responses'",
     )?;
+    let _ = ensure_column(
+        connection,
+        "sessions",
+        "provider_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     let _ = ensure_column(connection, "sessions", "model", "TEXT NOT NULL DEFAULT ''")?;
-    if provider_kind_added {
-        connection
-            .execute(
-                "UPDATE sessions
-                 SET provider_kind = COALESCE(
-                     (SELECT provider_kind FROM settings WHERE id = 1),
-                     'openai-responses'
-                 )",
-                [],
-            )
-            .map_err(|error| AppError::Database(error.to_string()))?;
-    }
-    connection
-        .execute_batch(
-            "UPDATE sessions
-             SET provider_kind = COALESCE(
-                 NULLIF(provider_kind, ''),
-                 (SELECT provider_kind FROM settings WHERE id = 1),
-                 'openai-responses'
-             );
-             UPDATE sessions
-             SET model = COALESCE(
-                 NULLIF(model, ''),
-                 (SELECT model FROM settings WHERE id = 1),
-                 ''
-             );",
-        )
-        .map_err(|error| AppError::Database(error.to_string()))?;
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| AppError::Database(error.to_string()))?;
@@ -289,61 +282,59 @@ fn initialize_connection(connection: &Connection) -> AppResult<()> {
 fn load_settings_inner(connection: &Connection) -> AppResult<Option<StoredSettings>> {
     let stored = connection
         .query_row(
-            "SELECT locale, provider_kind, base_url, api_key, model, max_output_tokens,
-                    providers_json
+            "SELECT locale, default_provider_id, providers_json, schema_version
              FROM settings WHERE id = 1",
             [],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, u32>(5)?,
-                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, u32>(3)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| AppError::Database(error.to_string()))?;
-    let Some((locale, kind, base_url, api_key, model, max_output_tokens, providers_json)) = stored
-    else {
+    let Some((locale, default_provider_id, providers_json, schema_version)) = stored else {
         return Ok(None);
     };
+    if schema_version != SETTINGS_SCHEMA_VERSION {
+        return Ok(Some(StoredSettings {
+            locale,
+            default_provider_id: None,
+            providers: Vec::new(),
+        }));
+    }
     let providers = match providers_json.filter(|value| !value.trim().is_empty()) {
         Some(value) => serde_json::from_str(&value)
             .map_err(|error| AppError::Database(format!("invalid provider settings: {error}")))?,
-        None => vec![StoredProviderSettings {
-            kind: kind.clone(),
-            base_url,
-            api_key,
-            models: (!model.is_empty()).then_some(model).into_iter().collect(),
-            max_output_tokens,
-        }],
+        None => Vec::new(),
     };
     Ok(Some(StoredSettings {
         locale,
-        default_provider_kind: kind,
+        default_provider_id: default_provider_id.filter(|value| !value.is_empty()),
         providers,
     }))
 }
 
 fn save_settings_inner(connection: &Connection, settings: &StoredSettings) -> AppResult<()> {
     validate_settings(settings)?;
-    let default_provider = settings
-        .providers
-        .iter()
-        .find(|provider| provider.kind == settings.default_provider_kind)
-        .ok_or_else(|| AppError::InvalidInput("default provider is missing".to_string()))?;
+    let default_provider = settings.default_provider_id.as_ref().and_then(|id| {
+        settings
+            .providers
+            .iter()
+            .find(|provider| &provider.id == id)
+    });
+    let legacy_provider = default_provider.or_else(|| settings.providers.first());
     let providers_json = serde_json::to_string(&settings.providers)
         .map_err(|error| AppError::Serialization(error.to_string()))?;
     connection
         .execute(
             "INSERT INTO settings (
                  id, locale, provider_kind, base_url, api_key, model, max_output_tokens,
-                 providers_json
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 providers_json, default_provider_id, schema_version
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                  locale = excluded.locale,
                  provider_kind = excluded.provider_kind,
@@ -351,15 +342,30 @@ fn save_settings_inner(connection: &Connection, settings: &StoredSettings) -> Ap
                  api_key = excluded.api_key,
                  model = excluded.model,
                  max_output_tokens = excluded.max_output_tokens,
-                 providers_json = excluded.providers_json",
+                 providers_json = excluded.providers_json,
+                 default_provider_id = excluded.default_provider_id,
+                 schema_version = excluded.schema_version",
             params![
                 settings.locale,
-                settings.default_provider_kind,
-                default_provider.base_url,
-                default_provider.api_key,
-                default_provider.models.first().cloned().unwrap_or_default(),
-                default_provider.max_output_tokens,
+                legacy_provider
+                    .map(|provider| provider.kind.as_str())
+                    .unwrap_or(""),
+                legacy_provider
+                    .map(|provider| provider.base_url.as_str())
+                    .unwrap_or(""),
+                legacy_provider
+                    .map(|provider| provider.api_key.as_str())
+                    .unwrap_or(""),
+                legacy_provider
+                    .and_then(|provider| provider.models.first())
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                legacy_provider
+                    .map(|provider| provider.max_output_tokens)
+                    .unwrap_or(4096),
                 providers_json,
+                settings.default_provider_id,
+                SETTINGS_SCHEMA_VERSION,
             ],
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
@@ -369,7 +375,7 @@ fn save_settings_inner(connection: &Connection, settings: &StoredSettings) -> Ap
 fn list_sessions_inner(connection: &Connection) -> AppResult<Vec<SessionSummary>> {
     let mut statement = connection
         .prepare(
-            "SELECT id, title, demo_path, provider_kind, model, created_at, updated_at
+            "SELECT id, title, demo_path, provider_id, model, created_at, updated_at
              FROM sessions ORDER BY updated_at DESC, created_at DESC",
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
@@ -387,18 +393,18 @@ fn create_session_inner(
     validate_id(&input.id)?;
     validate_title(&input.title)?;
     validate_demo_path(&input.demo_path)?;
-    validate_provider_kind(&input.provider_kind)?;
+    validate_id(&input.provider_id)?;
     validate_model(&input.model)?;
     connection
         .execute(
             "INSERT INTO sessions (
-                 id, title, demo_path, provider_kind, model, created_at, updated_at
+                 id, title, demo_path, provider_id, model, created_at, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 input.id,
                 input.title.trim(),
                 input.demo_path,
-                input.provider_kind,
+                input.provider_id,
                 input.model.trim(),
                 input.created_at
             ],
@@ -408,7 +414,7 @@ fn create_session_inner(
         id: input.id.clone(),
         title: input.title.trim().to_string(),
         demo_path: input.demo_path.clone(),
-        provider_kind: input.provider_kind.clone(),
+        provider_id: input.provider_id.clone(),
         model: input.model.trim().to_string(),
         created_at: input.created_at,
         updated_at: input.created_at,
@@ -439,7 +445,7 @@ fn load_session_inner(connection: &Connection, id: &str) -> AppResult<SessionDet
     validate_id(id)?;
     let (summary, runtime_state_text): (SessionSummary, Option<String>) = connection
         .query_row(
-            "SELECT id, title, demo_path, provider_kind, model, created_at, updated_at,
+            "SELECT id, title, demo_path, provider_id, model, created_at, updated_at,
                     runtime_state
              FROM sessions WHERE id = ?1",
             [id],
@@ -490,6 +496,7 @@ fn save_session_content_inner(
 ) -> AppResult<()> {
     validate_id(&input.id)?;
     validate_demo_path(&input.demo_path)?;
+    validate_id(&input.provider_id)?;
     validate_model(&input.model)?;
     validate_messages(&input.messages)?;
     let runtime_state = serialize_optional_json(input.runtime_state.as_ref(), "runtime state")?;
@@ -499,10 +506,12 @@ fn save_session_content_inner(
     let changed = transaction
         .execute(
             "UPDATE sessions
-             SET demo_path = ?1, model = ?2, runtime_state = ?3, updated_at = ?4
-             WHERE id = ?5",
+             SET demo_path = ?1, provider_id = ?2, model = ?3, runtime_state = ?4,
+                 updated_at = ?5
+             WHERE id = ?6",
             params![
                 input.demo_path,
+                input.provider_id,
                 input.model.trim(),
                 runtime_state,
                 input.updated_at,
@@ -552,7 +561,7 @@ fn session_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session
         id: row.get(0)?,
         title: row.get(1)?,
         demo_path: row.get(2)?,
-        provider_kind: row.get(3)?,
+        provider_id: row.get(3)?,
         model: row.get(4)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
@@ -563,18 +572,19 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
     if !matches!(settings.locale.as_str(), "en" | "zh-CN") {
         return Err(AppError::InvalidInput("unsupported locale".to_string()));
     }
-    validate_provider_kind(&settings.default_provider_kind)?;
-    if settings.providers.is_empty() || settings.providers.len() > 3 {
-        return Err(AppError::InvalidInput(
-            "provider settings must contain between one and three profiles".to_string(),
-        ));
+    if settings.providers.len() > MAX_PROVIDERS {
+        return Err(AppError::InvalidInput(format!(
+            "provider settings cannot contain more than {MAX_PROVIDERS} profiles"
+        )));
     }
-    let mut kinds = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
     for provider in &settings.providers {
+        validate_id(&provider.id)?;
+        validate_text(&provider.name, "provider name", MAX_TITLE_CHARS, false)?;
         validate_provider_kind(&provider.kind)?;
-        if !kinds.insert(provider.kind.as_str()) {
+        if !ids.insert(provider.id.as_str()) {
             return Err(AppError::InvalidInput(
-                "provider settings contain duplicate formats".to_string(),
+                "provider settings contain duplicate identifiers".to_string(),
             ));
         }
         validate_text(
@@ -584,9 +594,9 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
             false,
         )?;
         validate_text(&provider.api_key, "provider API key", MAX_PATH_CHARS, true)?;
-        if provider.models.len() > MAX_MODELS_PER_PROVIDER {
+        if provider.models.is_empty() || provider.models.len() > MAX_MODELS_PER_PROVIDER {
             return Err(AppError::InvalidInput(format!(
-                "provider cannot contain more than {MAX_MODELS_PER_PROVIDER} models"
+                "provider must contain between one and {MAX_MODELS_PER_PROVIDER} models"
             )));
         }
         let mut models = std::collections::HashSet::new();
@@ -604,10 +614,12 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
             ));
         }
     }
-    if !kinds.contains(settings.default_provider_kind.as_str()) {
-        return Err(AppError::InvalidInput(
-            "default provider is missing".to_string(),
-        ));
+    if let Some(default_provider_id) = &settings.default_provider_id {
+        if !ids.contains(default_provider_id.as_str()) {
+            return Err(AppError::InvalidInput(
+                "default provider is missing".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -739,8 +751,10 @@ mod tests {
     fn settings() -> StoredSettings {
         StoredSettings {
             locale: "zh-CN".to_string(),
-            default_provider_kind: "openai-responses".to_string(),
+            default_provider_id: Some("provider-openai".to_string()),
             providers: vec![StoredProviderSettings {
+                id: "provider-openai".to_string(),
+                name: "OpenAI".to_string(),
                 kind: "openai-responses".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 api_key: "test-key".to_string(),
@@ -755,7 +769,7 @@ mod tests {
             id: "session-1".to_string(),
             title: "First match".to_string(),
             demo_path: "C:\\demos\\match.dem".to_string(),
-            provider_kind: "openai-responses".to_string(),
+            provider_id: "provider-openai".to_string(),
             model: "gpt-test".to_string(),
             created_at: 100,
         }
@@ -774,6 +788,23 @@ mod tests {
     }
 
     #[test]
+    fn empty_provider_settings_round_trip() {
+        let state = DatabaseState::in_memory().expect("database");
+        let empty = StoredSettings {
+            locale: "en".to_string(),
+            default_provider_id: None,
+            providers: Vec::new(),
+        };
+        state
+            .with_connection(|connection| save_settings_inner(connection, &empty))
+            .expect("save empty settings");
+        let loaded = state
+            .with_connection(|connection| load_settings_inner(connection))
+            .expect("load settings");
+        assert_eq!(loaded, Some(empty));
+    }
+
+    #[test]
     fn sessions_and_messages_round_trip_atomically() {
         let state = DatabaseState::in_memory().expect("database");
         let created = state
@@ -784,6 +815,7 @@ mod tests {
         let content = SaveSessionContentInput {
             id: created.id.clone(),
             demo_path: created.demo_path.clone(),
+            provider_id: "provider-backup".to_string(),
             model: "gpt-next".to_string(),
             messages: vec![PersistedMessage {
                 id: "message-1".to_string(),
@@ -802,7 +834,7 @@ mod tests {
             .expect("load session");
         assert_eq!(loaded.messages, content.messages);
         assert_eq!(loaded.runtime_state, content.runtime_state);
-        assert_eq!(loaded.summary.provider_kind, "openai-responses");
+        assert_eq!(loaded.summary.provider_id, "provider-backup");
         assert_eq!(loaded.summary.model, "gpt-next");
         assert_eq!(loaded.summary.updated_at, 200);
     }
@@ -820,6 +852,7 @@ mod tests {
                     &SaveSessionContentInput {
                         id: created.id.clone(),
                         demo_path: created.demo_path.clone(),
+                        provider_id: created.provider_id.clone(),
                         model: created.model.clone(),
                         messages: vec![PersistedMessage {
                             id: "message-1".to_string(),
@@ -861,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_database_is_migrated_without_losing_settings_or_sessions() {
+    fn legacy_provider_settings_are_discarded_without_losing_sessions() {
         let connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
@@ -896,10 +929,12 @@ mod tests {
         let loaded_settings = load_settings_inner(&connection)
             .expect("load settings")
             .expect("settings");
-        assert_eq!(loaded_settings.default_provider_kind, "anthropic");
-        assert_eq!(loaded_settings.providers[0].models, ["claude-test"]);
+        assert_eq!(loaded_settings.locale, "en");
+        assert_eq!(loaded_settings.default_provider_id, None);
+        assert!(loaded_settings.providers.is_empty());
         let sessions = list_sessions_inner(&connection).expect("sessions");
-        assert_eq!(sessions[0].provider_kind, "anthropic");
-        assert_eq!(sessions[0].model, "claude-test");
+        assert_eq!(sessions[0].id, "legacy");
+        assert_eq!(sessions[0].provider_id, "");
+        assert_eq!(sessions[0].model, "");
     }
 }

@@ -9,12 +9,7 @@ import systemPrompt from "../agent/system-prompt.md?raw";
 import { createProviderAdapter } from "../agent/providers";
 import { AgentRuntime } from "../agent/runtime";
 import { DEMO_TOOL_SPECS, HOST_SYSTEM_ADDENDUM } from "../agent/tools";
-import type {
-  AgentEvent,
-  AgentRuntimeState,
-  JsonValue,
-  ProviderKind,
-} from "../agent/types";
+import type { AgentEvent, AgentRuntimeState, JsonValue, ProviderKind } from "../agent/types";
 import {
   createStoredSession,
   deleteStoredSession,
@@ -37,13 +32,16 @@ import { translate, type Locale } from "../i18n";
 import { errorMessage } from "./display";
 import { deserializeTimeline, serializeTimeline, titleFromPrompt } from "./sessionPersistence";
 import {
-  canSwitchModelFormat,
   createDefaultSettings,
   createProviderConfig,
+  getDefaultProviderProfile,
   getDefaultModel,
   getProviderProfile,
   isProviderReady,
   normalizeSettings,
+  settingsEqual,
+  type SettingsValidationIssue,
+  validateSettings,
 } from "./state";
 import type {
   ConversationState,
@@ -55,7 +53,9 @@ import type {
 
 interface RuntimeCache {
   sessionId: string;
+  providerId: string;
   providerKind: ProviderKind;
+  baseUrl: string;
   model: string;
   runtime: AgentRuntime;
 }
@@ -63,6 +63,10 @@ interface RuntimeCache {
 export function useWorkspace(initialLocale: Locale) {
   const initialSettings = createDefaultSettings(initialLocale);
   const [settings, setSettingsState] = useState<StoredSettings>(initialSettings);
+  const [settingsDraft, setSettingsDraftState] = useState<StoredSettings>(initialSettings);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
   const [page, setPage] = useState<WorkspacePage>("conversation");
@@ -78,6 +82,8 @@ export function useWorkspace(initialLocale: Locale) {
   const [status, setStatus] = useState<StatusMessage>({ key: "status.readyDemo" });
 
   const settingsRef = useRef(settings);
+  const settingsDraftRef = useRef(settingsDraft);
+  const settingsSavingRef = useRef(false);
   const conversationRef = useRef(conversation);
   const activeSessionIdRef = useRef<string | null>(null);
   const runtimeRef = useRef<RuntimeCache | null>(null);
@@ -101,16 +107,50 @@ export function useWorkspace(initialLocale: Locale) {
     setActiveSessionIdState(id);
   }, []);
 
-  const setSettings = useCallback(
+  const updateSettingsDraft = useCallback(
     (update: (current: StoredSettings) => StoredSettings) => {
-      setSettingsState((current) => {
-        const next = normalizeSettings(update(current), current.locale);
-        settingsRef.current = next;
+      setSettingsDraftState((current) => {
+        const next = update(current);
+        settingsDraftRef.current = next;
+        setSettingsDirty(!settingsEqual(settingsRef.current, next));
         return next;
       });
+      setSettingsSaveError(null);
     },
     [],
   );
+
+  const saveSettings = useCallback(async () => {
+    if (settingsSavingRef.current) return;
+    settingsSavingRef.current = true;
+    setSettingsSaving(true);
+    setSettingsSaveError(null);
+    const draftAtStart = settingsDraftRef.current;
+    try {
+      const next = normalizeSettings(draftAtStart, initialLocale);
+      const validationIssue = validateSettings(next);
+      if (validationIssue) {
+        throw new Error(settingsValidationMessage(next.locale, validationIssue));
+      }
+      await saveStoredSettings(next);
+      settingsRef.current = next;
+      setSettingsState(next);
+      if (settingsDraftRef.current === draftAtStart) {
+        settingsDraftRef.current = next;
+        setSettingsDraftState(next);
+        setSettingsDirty(false);
+      } else {
+        setSettingsDirty(!settingsEqual(next, settingsDraftRef.current));
+      }
+      runtimeRef.current = null;
+      setStatus({ key: "status.configurationChanged" });
+    } catch (caught) {
+      setSettingsSaveError(errorMessage(caught));
+    } finally {
+      settingsSavingRef.current = false;
+      setSettingsSaving(false);
+    }
+  }, [initialLocale]);
 
   useEffect(() => {
     let active = true;
@@ -119,7 +159,9 @@ export function useWorkspace(initialLocale: Locale) {
         if (!active) return;
         const loadedSettings = normalizeSettings(snapshot.settings, initialLocale);
         settingsRef.current = loadedSettings;
+        settingsDraftRef.current = loadedSettings;
         setSettingsState(loadedSettings);
+        setSettingsDraftState(loadedSettings);
         setSessions(snapshot.sessions);
         replaceConversation(createEmptyConversation(loadedSettings));
       })
@@ -135,25 +177,11 @@ export function useWorkspace(initialLocale: Locale) {
   }, [initialLocale, replaceConversation]);
 
   useEffect(() => {
-    if (!initialized) return undefined;
-    const timeout = window.setTimeout(() => {
-      void saveStoredSettings(settings).catch((caught) =>
-        setError(errorMessage(caught)),
-      );
-    }, 350);
-    runtimeRef.current = null;
-    return () => window.clearTimeout(timeout);
-  }, [initialized, settings]);
-
-  useEffect(() => {
     if (activeSessionId !== null) return;
-    const profile = getProviderProfile(settings, conversation.providerKind);
-    if (profile.models.includes(conversation.model)) return;
-    mutateConversation((current) => ({
-      ...current,
-      model: profile.models[0] ?? "",
-    }));
-  }, [activeSessionId, conversation.model, conversation.providerKind, mutateConversation, settings]);
+    const profile = getProviderProfile(settings, conversation.providerId);
+    if (profile?.models.includes(conversation.model)) return;
+    mutateConversation((current) => selectDefaultProvider(current, settings));
+  }, [activeSessionId, conversation.model, conversation.providerId, mutateConversation, settings]);
 
   const startNewSession = useCallback(() => {
     if (sending) return;
@@ -199,7 +227,7 @@ export function useWorkspace(initialLocale: Locale) {
           demoPath: detail.demoPath,
           header: overview.header,
           players: overview.players,
-          providerKind: detail.providerKind,
+          providerId: detail.providerId,
           model: detail.model,
           entries: deserializeTimeline(detail.messages),
           runtimeState: detail.runtimeState as AgentRuntimeState | undefined,
@@ -281,15 +309,10 @@ export function useWorkspace(initialLocale: Locale) {
       if (sending) return;
       const sessionId = activeSessionIdRef.current;
       const current = conversationRef.current;
-      if (
-        !canSwitchModelFormat(sessionId ? current.providerKind : null, option.providerKind)
-      ) {
-        return;
-      }
       runtimeRef.current = null;
       const next = {
         ...current,
-        providerKind: sessionId ? current.providerKind : option.providerKind,
+        providerId: option.providerId,
         model: option.model,
       };
       replaceConversation(next);
@@ -299,7 +322,12 @@ export function useWorkspace(initialLocale: Locale) {
         sortSessions(
           items.map((item) =>
             item.id === sessionId
-              ? { ...item, model: option.model, updatedAt }
+              ? {
+                  ...item,
+                  providerId: option.providerId,
+                  model: option.model,
+                  updatedAt,
+                }
               : item,
           ),
         ),
@@ -337,10 +365,11 @@ export function useWorkspace(initialLocale: Locale) {
   const submit = useCallback(async () => {
     const question = draft.trim();
     const initial = conversationRef.current;
-    const profile = getProviderProfile(settingsRef.current, initial.providerKind);
+    const profile = getProviderProfile(settingsRef.current, initial.providerId);
     if (
       !question ||
       !initial.demoPath ||
+      !profile ||
       !isProviderReady(profile, initial.model) ||
       sending ||
       demoLoading
@@ -371,7 +400,7 @@ export function useWorkspace(initialLocale: Locale) {
           id: createId("session"),
           title: titleFromPrompt(question),
           demoPath: initial.demoPath,
-          providerKind: initial.providerKind,
+          providerId: profile.id,
           model: initial.model,
           createdAt: Date.now(),
         });
@@ -400,7 +429,12 @@ export function useWorkspace(initialLocale: Locale) {
           sortSessions(
             items.map((item) =>
               item.id === sessionId
-                ? { ...item, model: persisted.model, updatedAt: Date.now() }
+                ? {
+                    ...item,
+                    providerId: persisted.providerId ?? item.providerId,
+                    model: persisted.model,
+                    updatedAt: Date.now(),
+                  }
                 : item,
             ),
           ),
@@ -424,7 +458,7 @@ export function useWorkspace(initialLocale: Locale) {
     }
   }, [demoLoading, draft, mutateConversation, sending, setActiveSessionId]);
 
-  const profile = getProviderProfile(settings, conversation.providerKind);
+  const profile = getProviderProfile(settings, conversation.providerId);
   const providerReady = isProviderReady(profile, conversation.model);
   const canSend =
     initialized &&
@@ -437,7 +471,13 @@ export function useWorkspace(initialLocale: Locale) {
 
   return {
     settings,
-    setSettings,
+    settingsDraft,
+    settingsDirty,
+    settingsSaving,
+    settingsSaveError,
+    updateSettingsDraft,
+    saveSettings,
+    dismissSettingsSaveError: () => setSettingsSaveError(null),
     sessions,
     activeSessionId,
     page,
@@ -451,7 +491,7 @@ export function useWorkspace(initialLocale: Locale) {
     status,
     providerReady,
     canSend,
-    modelOptions: createModelOptions(settings, conversation, activeSessionId),
+    modelOptions: createModelOptions(settings, conversation),
     setDraft,
     setError,
     startNewSession,
@@ -466,11 +506,12 @@ export function useWorkspace(initialLocale: Locale) {
 }
 
 function createEmptyConversation(settings: StoredSettings): ConversationState {
+  const provider = getDefaultProviderProfile(settings);
   return {
     demoPath: "",
     header: null,
     players: null,
-    providerKind: settings.defaultProviderKind,
+    providerId: provider?.id ?? null,
     model: getDefaultModel(settings),
     entries: [],
   };
@@ -479,17 +520,17 @@ function createEmptyConversation(settings: StoredSettings): ConversationState {
 function createModelOptions(
   settings: StoredSettings,
   conversation: ConversationState,
-  activeSessionId: string | null,
 ): ModelOption[] {
-  if (activeSessionId) {
-    const models = getProviderProfile(settings, conversation.providerKind).models;
-    return [...new Set([conversation.model, ...models].filter(Boolean))].map((model) => ({
-      providerKind: conversation.providerKind,
-      model,
-    }));
-  }
   return settings.providers.flatMap((profile) =>
-    profile.models.map((model) => ({ providerKind: profile.kind, model })),
+    [...new Set([
+      ...(profile.id === conversation.providerId ? [conversation.model] : []),
+      ...profile.models,
+    ].filter(Boolean))].map((model) => ({
+      providerId: profile.id,
+      providerKind: profile.kind,
+      providerName: profile.name,
+      model,
+    })),
   );
 }
 
@@ -499,18 +540,21 @@ function getRuntime(
   settings: StoredSettings,
   runtimeRef: MutableRefObject<RuntimeCache | null>,
 ): AgentRuntime {
+  const profile = getProviderProfile(settings, conversation.providerId);
+  if (!profile) throw new Error("The selected provider is no longer available");
   const cached = runtimeRef.current;
   if (
     cached?.sessionId === sessionId &&
-    cached.providerKind === conversation.providerKind &&
+    cached.providerId === profile.id &&
+    cached.providerKind === profile.kind &&
+    cached.baseUrl === profile.baseUrl &&
     cached.model === conversation.model
   ) {
     return cached.runtime;
   }
-  const profile = getProviderProfile(settings, conversation.providerKind);
   const runtime = new AgentRuntime({
     adapter: createProviderAdapter(
-      conversation.providerKind,
+      profile.kind,
       createHttpStreamTransport(),
     ),
     config: createProviderConfig(profile, conversation.model),
@@ -521,7 +565,9 @@ function getRuntime(
   });
   runtimeRef.current = {
     sessionId,
-    providerKind: conversation.providerKind,
+    providerId: profile.id,
+    providerKind: profile.kind,
+    baseUrl: profile.baseUrl,
     model: conversation.model,
     runtime,
   };
@@ -638,11 +684,47 @@ async function persistConversation(
   await saveStoredSessionContent({
     id: sessionId,
     demoPath: conversation.demoPath,
+    providerId: requireProviderId(conversation.providerId),
     model: conversation.model,
     messages: serializeTimeline(conversation.entries),
     runtimeState: conversation.runtimeState as unknown as JsonValue | undefined,
     updatedAt,
   });
+}
+
+function selectDefaultProvider(
+  conversation: ConversationState,
+  settings: StoredSettings,
+): ConversationState {
+  const provider = getDefaultProviderProfile(settings);
+  return {
+    ...conversation,
+    providerId: provider?.id ?? null,
+    model: provider?.models[0] ?? "",
+  };
+}
+
+function requireProviderId(providerId: string | null): string {
+  if (!providerId) throw new Error("A provider must be selected");
+  return providerId;
+}
+
+function settingsValidationMessage(
+  locale: Locale,
+  issue: SettingsValidationIssue,
+): string {
+  switch (issue.type) {
+    case "duplicateProviderId":
+      return translate(locale, "settings.errorDuplicateProviderId");
+    case "providerName":
+      return translate(locale, "settings.errorProviderName");
+    case "providerConnection":
+      return translate(locale, "settings.errorProviderConnection", {
+        name: issue.providerName ?? "",
+      });
+    case "defaultProvider":
+      return translate(locale, "settings.errorDefaultProvider");
+  }
 }
 
 function sortSessions(items: SessionSummary[]): SessionSummary[] {

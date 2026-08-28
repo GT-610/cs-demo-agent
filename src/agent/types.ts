@@ -62,6 +62,7 @@ export type ProviderKind =
   | "anthropic";
 
 export interface ProviderConfig {
+  providerId: string;
   kind: ProviderKind;
   baseUrl: string;
   apiKey: string;
@@ -83,6 +84,14 @@ export interface ResponsesContinuation {
 }
 
 export type ProviderContinuation = ResponsesContinuation;
+
+export interface StoredProviderContinuation {
+  providerId: string;
+  providerKind: ProviderKind;
+  baseUrl: string;
+  model: string;
+  value: ProviderContinuation;
+}
 
 export interface ProviderTurn {
   text: string;
@@ -146,5 +155,5 @@ export type AgentEventHandler = (event: AgentEvent) => void;
 
 export interface AgentRuntimeState {
   messages: AgentMessage[];
-  continuation?: ProviderContinuation;
+  continuation?: StoredProviderContinuation;
 }

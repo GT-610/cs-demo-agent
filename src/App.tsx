@@ -103,7 +103,16 @@ export function App() {
             overflow: "hidden",
           }}
         >
-          <SettingsPage settings={workspace.settings} updateSettings={workspace.setSettings} t={t} />
+          <SettingsPage
+            settings={workspace.settingsDraft}
+            dirty={workspace.settingsDirty}
+            saving={workspace.settingsSaving}
+            saveError={workspace.settingsSaveError}
+            updateSettings={workspace.updateSettingsDraft}
+            saveSettings={workspace.saveSettings}
+            dismissSaveError={workspace.dismissSettingsSaveError}
+            t={t}
+          />
         </Box>
       ) : (
         <>
@@ -114,7 +123,7 @@ export function App() {
               demoPath={workspace.conversation.demoPath}
               providerReady={workspace.providerReady}
               activeSession={workspace.activeSessionId !== null}
-              providerKind={workspace.conversation.providerKind}
+              providerId={workspace.conversation.providerId}
               model={workspace.conversation.model}
               modelOptions={workspace.modelOptions}
               sending={workspace.sending}

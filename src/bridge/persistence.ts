@@ -4,6 +4,8 @@ import type { Locale } from "../i18n";
 import type { InvokeFunction } from "./tauri";
 
 export interface StoredProviderProfile {
+  id: string;
+  name: string;
   kind: ProviderKind;
   baseUrl: string;
   apiKey: string;
@@ -13,7 +15,7 @@ export interface StoredProviderProfile {
 
 export interface StoredSettings {
   locale: Locale;
-  defaultProviderKind: ProviderKind;
+  defaultProviderId: string | null;
   providers: StoredProviderProfile[];
 }
 
@@ -21,7 +23,7 @@ export interface SessionSummary {
   id: string;
   title: string;
   demoPath: string;
-  providerKind: ProviderKind;
+  providerId: string;
   model: string;
   createdAt: number;
   updatedAt: number;
@@ -48,7 +50,7 @@ export interface CreateSessionInput {
   id: string;
   title: string;
   demoPath: string;
-  providerKind: ProviderKind;
+  providerId: string;
   model: string;
   createdAt: number;
 }
@@ -56,6 +58,7 @@ export interface CreateSessionInput {
 export interface SaveSessionContentInput {
   id: string;
   demoPath: string;
+  providerId: string;
   model: string;
   messages: PersistedMessage[];
   runtimeState?: JsonValue;

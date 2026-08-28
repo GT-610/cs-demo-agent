@@ -31,6 +31,7 @@ class SequenceAdapter implements ProviderAdapter {
 }
 
 const config = {
+  providerId: "provider-test",
   kind: "openai-chat" as const,
   baseUrl: "https://api.example.test/v1",
   apiKey: "secret",
@@ -271,6 +272,53 @@ describe("AgentRuntime", () => {
       { role: "user", content: "second" },
     ]);
     expect(adapter.requests[0]?.continuation).toEqual(continuation);
+  });
+
+  test("migrates canonical history and drops native continuation across providers", async () => {
+    const continuation = {
+      provider: "openai-responses" as const,
+      inputItems: [{ role: "user", content: "first" }],
+      acknowledgedMessages: 3,
+    };
+    const firstRuntime = new AgentRuntime({
+      adapter: new SequenceAdapter([
+        { text: "first answer", toolCalls: [], continuation },
+      ]),
+      config: {
+        ...config,
+        providerId: "provider-responses",
+        kind: "openai-responses",
+      },
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({}),
+    });
+    await firstRuntime.send("first");
+
+    const adapter = new SequenceAdapter([{ text: "migrated answer", toolCalls: [] }]);
+    const migrated = new AgentRuntime({
+      adapter,
+      config: {
+        ...config,
+        providerId: "provider-anthropic",
+        kind: "anthropic",
+        baseUrl: "https://anthropic.example.test/v1",
+        model: "claude-test",
+      },
+      tools: [],
+      systemPrompt: "Use evidence.",
+      initialState: firstRuntime.state,
+      executeTool: async () => ({}),
+    });
+    await migrated.send("second");
+
+    expect(adapter.requests[0]?.continuation).toBeUndefined();
+    expect(adapter.requests[0]?.messages).toEqual([
+      { role: "system", content: "Use evidence." },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "first answer", toolCalls: [] },
+      { role: "user", content: "second" },
+    ]);
   });
 
   test("rolls back when an event callback throws", async () => {

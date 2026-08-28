@@ -14,6 +14,7 @@ import { OpenAiChatAdapter } from "./openaiChat";
 import { OpenAiResponsesAdapter } from "./openaiResponses";
 
 const openAiConfig: ProviderConfig = {
+  providerId: "provider-openai",
   kind: "openai-chat",
   baseUrl: "https://api.example.test/v1",
   apiKey: "secret",
@@ -290,6 +291,7 @@ describe("AnthropicAdapter", () => {
       ),
     );
     const config: ProviderConfig = {
+      providerId: "provider-anthropic",
       kind: "anthropic",
       baseUrl: "https://anthropic.example.test",
       apiKey: "anthropic-secret",

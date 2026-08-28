@@ -26,7 +26,7 @@ describe("persistence bridge", () => {
           id: "session-1",
           title: "Match",
           demoPath: "match.dem",
-          providerKind: "openai-responses",
+          providerId: "provider-openai",
           model: "gpt-test",
           createdAt: 1,
           updatedAt: 2,
@@ -47,9 +47,11 @@ describe("persistence bridge", () => {
     await saveStoredSettings(
       {
         locale: "en",
-        defaultProviderKind: "openai-responses",
+        defaultProviderId: "provider-openai",
         providers: [
           {
+            id: "provider-openai",
+            name: "OpenAI",
             kind: "openai-responses",
             baseUrl: "https://api.openai.com/v1",
             apiKey: "key",
@@ -65,7 +67,7 @@ describe("persistence bridge", () => {
         id: "session-1",
         title: "Match",
         demoPath: "match.dem",
-        providerKind: "openai-responses",
+        providerId: "provider-openai",
         model: "gpt-test",
         createdAt: 1,
       },
@@ -76,6 +78,7 @@ describe("persistence bridge", () => {
       {
         id: "session-1",
         demoPath: "match.dem",
+        providerId: "provider-openai",
         model: "gpt-test",
         messages: [],
         updatedAt: 3,
@@ -106,7 +109,7 @@ describe("persistence bridge", () => {
         id: "local",
         title: "Local",
         demoPath: "local.dem",
-        providerKind: "anthropic",
+        providerId: "provider-anthropic",
         model: "claude-test",
         createdAt: 10,
       }),
@@ -114,7 +117,7 @@ describe("persistence bridge", () => {
       id: "local",
       title: "Local",
       demoPath: "local.dem",
-      providerKind: "anthropic",
+      providerId: "provider-anthropic",
       model: "claude-test",
       createdAt: 10,
       updatedAt: 10,

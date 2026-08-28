@@ -40,7 +40,7 @@ export interface ConversationState {
   demoPath: string;
   header: DemoToolResult | null;
   players: DemoToolResult | null;
-  providerKind: ProviderKind;
+  providerId: string | null;
   model: string;
   entries: TimelineEntry[];
   runtimeState?: AgentRuntimeState;
@@ -55,6 +55,8 @@ export interface StatusMessage {
 export type WorkspacePage = "conversation" | "settings";
 
 export interface ModelOption {
+  providerId: string;
   providerKind: ProviderKind;
+  providerName: string;
   model: string;
 }
