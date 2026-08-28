@@ -1,18 +1,28 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { JsonValue } from "../agent/types";
-import type { ProviderDraft } from "../app/state";
+import type { JsonValue, ProviderKind } from "../agent/types";
 import type { Locale } from "../i18n";
 import type { InvokeFunction } from "./tauri";
 
+export interface StoredProviderProfile {
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey: string;
+  models: string[];
+  maxOutputTokens: number;
+}
+
 export interface StoredSettings {
   locale: Locale;
-  provider: ProviderDraft;
+  defaultProviderKind: ProviderKind;
+  providers: StoredProviderProfile[];
 }
 
 export interface SessionSummary {
   id: string;
   title: string;
   demoPath: string;
+  providerKind: ProviderKind;
+  model: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -38,12 +48,15 @@ export interface CreateSessionInput {
   id: string;
   title: string;
   demoPath: string;
+  providerKind: ProviderKind;
+  model: string;
   createdAt: number;
 }
 
 export interface SaveSessionContentInput {
   id: string;
   demoPath: string;
+  model: string;
   messages: PersistedMessage[];
   runtimeState?: JsonValue;
   updatedAt: number;

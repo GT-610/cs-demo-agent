@@ -26,6 +26,8 @@ describe("persistence bridge", () => {
           id: "session-1",
           title: "Match",
           demoPath: "match.dem",
+          providerKind: "openai-responses",
+          model: "gpt-test",
           createdAt: 1,
           updatedAt: 2,
           messages: [],
@@ -45,13 +47,16 @@ describe("persistence bridge", () => {
     await saveStoredSettings(
       {
         locale: "en",
-        provider: {
-          kind: "openai-responses",
-          baseUrl: "https://api.openai.com/v1",
-          apiKey: "key",
-          model: "gpt-test",
-          maxOutputTokens: 4096,
-        },
+        defaultProviderKind: "openai-responses",
+        providers: [
+          {
+            kind: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "key",
+            models: ["gpt-test"],
+            maxOutputTokens: 4096,
+          },
+        ],
       },
       invokeCommand,
     );
@@ -60,6 +65,8 @@ describe("persistence bridge", () => {
         id: "session-1",
         title: "Match",
         demoPath: "match.dem",
+        providerKind: "openai-responses",
+        model: "gpt-test",
         createdAt: 1,
       },
       invokeCommand,
@@ -69,6 +76,7 @@ describe("persistence bridge", () => {
       {
         id: "session-1",
         demoPath: "match.dem",
+        model: "gpt-test",
         messages: [],
         updatedAt: 3,
       },
@@ -98,12 +106,16 @@ describe("persistence bridge", () => {
         id: "local",
         title: "Local",
         demoPath: "local.dem",
+        providerKind: "anthropic",
+        model: "claude-test",
         createdAt: 10,
       }),
     ).toEqual({
       id: "local",
       title: "Local",
       demoPath: "local.dem",
+      providerKind: "anthropic",
+      model: "claude-test",
       createdAt: 10,
       updatedAt: 10,
     });
