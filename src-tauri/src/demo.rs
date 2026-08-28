@@ -842,7 +842,7 @@ mod tests {
         );
 
         let events = query_events_sync(QueryEventsRequest {
-            path,
+            path: path.clone(),
             event_names: vec!["round_end".to_string()],
             player_props: None,
             other_props: Some(vec!["total_rounds_played".to_string()]),
@@ -851,10 +851,14 @@ mod tests {
         .expect("fixture events should parse");
         assert!(events.meta.original_row_count.unwrap_or_default() > 0);
 
-        let rounds = get_round_summary_sync(
-            &std::env::var("CS_DEMO_AGENT_TEST_DEMO").expect("fixture path should remain set"),
-        )
-        .expect("fixture round summary should parse");
+        let rounds = get_round_summary_sync(&path).expect("fixture round summary should parse");
         assert!(rounds.meta.original_row_count.unwrap_or_default() > 0);
+
+        let grenades = query_grenades_sync(QueryGrenadesRequest {
+            path,
+            extra: Some(vec!["total_rounds_played".to_string()]),
+        })
+        .expect("fixture grenade trajectories should parse");
+        assert!(grenades.data.is_array());
     }
 }
