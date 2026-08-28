@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   createDemoToolExecutor,
-  createHttpTransport,
   createHttpStreamTransport,
   loadDemoOverview,
   normalizeDemoPath,
@@ -65,27 +64,6 @@ describe("Tauri bridge", () => {
       ),
     ).rejects.toThrow("Unknown demo tool");
     expect(invoked).toBe(false);
-  });
-
-  test("routes provider JSON through the Rust HTTP command", async () => {
-    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
-    const invoke: InvokeFunction = async (command, args) => {
-      calls.push({ command, args });
-      return { status: 200, body: { id: "response" } } as never;
-    };
-    const transport = createHttpTransport(invoke);
-    const request = {
-      url: "https://api.example.test/v1/responses",
-      headers: { Authorization: "Bearer token" },
-      body: { model: "example" },
-      timeoutMs: 30_000,
-    };
-
-    await transport(request);
-
-    expect(calls).toEqual([
-      { command: "send_http_json", args: { request } },
-    ]);
   });
 
   test("routes streaming provider events through a Tauri channel", async () => {

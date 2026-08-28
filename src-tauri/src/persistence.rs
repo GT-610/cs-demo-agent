@@ -584,9 +584,9 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
             false,
         )?;
         validate_text(&provider.api_key, "provider API key", MAX_PATH_CHARS, true)?;
-        if provider.models.is_empty() || provider.models.len() > MAX_MODELS_PER_PROVIDER {
+        if provider.models.len() > MAX_MODELS_PER_PROVIDER {
             return Err(AppError::InvalidInput(format!(
-                "provider must contain between one and {MAX_MODELS_PER_PROVIDER} models"
+                "provider cannot contain more than {MAX_MODELS_PER_PROVIDER} models"
             )));
         }
         let mut models = std::collections::HashSet::new();

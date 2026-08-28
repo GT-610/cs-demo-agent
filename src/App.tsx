@@ -1,102 +1,148 @@
-import { Box } from "@mui/material";
+import { Box, Drawer } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
-import { useAnalysisSession } from "./app/useAnalysisSession";
-import { AnalysisSidebar } from "./components/AnalysisSidebar";
-import { AppHeader } from "./components/AppHeader";
+import { fileName } from "./app/display";
+import { useWorkspace } from "./app/useWorkspace";
 import { Conversation } from "./components/Conversation";
-import { EvidencePanel } from "./components/EvidencePanel";
-import {
-  detectLocale,
-  translate,
-  type Locale,
-  type Translator,
-} from "./i18n";
+import { DemoSidebar } from "./components/DemoSidebar";
+import { SettingsPage } from "./components/SettingsPage";
+import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { detectLocale, translate, type Translator } from "./i18n";
 
 export function App() {
-  const [locale, setLocale] = useState<Locale>(detectLocale);
+  const [initialLocale] = useState(detectLocale);
+  const workspace = useWorkspace(initialLocale);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [demoInfoOpen, setDemoInfoOpen] = useState(false);
   const t = useCallback<Translator>(
-    (key, params) => translate(locale, key, params),
-    [locale],
+    (key, params) => translate(workspace.settings.locale, key, params),
+    [workspace.settings.locale],
   );
-  const session = useAnalysisSession(t);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
-  }, [locale]);
+    document.documentElement.lang = workspace.settings.locale;
+  }, [workspace.settings.locale]);
+
+  const activeSummary = workspace.sessions.find(
+    (session) => session.id === workspace.activeSessionId,
+  );
+  const headerTitle =
+    workspace.page === "settings"
+      ? t("settings.title")
+      : activeSummary?.title ??
+        (workspace.conversation.demoPath
+          ? fileName(workspace.conversation.demoPath)
+          : t("sessions.new"));
+  const busy = workspace.sending || workspace.sessionLoading || workspace.demoLoading;
+
+  const sidebar = (
+    <WorkspaceSidebar
+      sessions={workspace.sessions}
+      activeSessionId={workspace.activeSessionId}
+      settingsActive={workspace.page === "settings"}
+      busy={busy}
+      onNewSession={workspace.startNewSession}
+      onOpenSession={workspace.openSession}
+      onOpenSettings={workspace.openSettings}
+      onRenameSession={workspace.renameSession}
+      onDeleteSession={workspace.deleteSession}
+      onNavigate={() => setNavigationOpen(false)}
+      t={t}
+    />
+  );
+
+  const demoSidebar = (
+    <DemoSidebar
+      conversation={workspace.conversation}
+      demoLoading={workspace.demoLoading}
+      sessionBound={workspace.activeSessionId !== null}
+      sending={workspace.sending}
+      onChooseDemo={workspace.chooseDemo}
+      t={t}
+    />
+  );
 
   return (
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: "312px minmax(0, 1fr)",
-        gridTemplateRows: "66px minmax(0, 1fr)",
+        gridTemplateColumns: {
+          xs: "minmax(0, 1fr)",
+          md: "230px minmax(0, 1fr)",
+          lg: "230px minmax(0, 1fr) 286px",
+        },
+        gridTemplateRows: "54px minmax(0, 1fr)",
+        width: "100%",
         height: "100vh",
-        "@media (max-width: 1230px)": {
-          gridTemplateColumns: "280px minmax(0, 1fr)",
-        },
-        "@media (max-width: 1040px)": {
-          gridTemplateColumns: "260px minmax(0, 1fr)",
-          height: "auto",
-          minHeight: "100vh",
-        },
+        minHeight: 0,
+        overflow: "hidden",
       }}
     >
-      <AppHeader
-        locale={locale}
-        setLocale={setLocale}
-        status={session.status}
-        busy={session.sending || session.demoLoading}
-        canClear={
-          !session.sending &&
-          (session.messages.length > 0 || session.evidence.length > 0)
-        }
-        onClear={session.clearSession}
-        t={t}
-      />
-      <AnalysisSidebar
-        demoPath={session.demoPath}
-        header={session.header}
-        players={session.players}
-        provider={session.provider}
-        demoLoading={session.demoLoading}
-        sending={session.sending}
-        onChooseDemo={session.chooseDemo}
-        updateProvider={session.updateProvider}
-        t={t}
-      />
-      <Box
-        component="main"
-        sx={{
-          display: "grid",
-          gridColumn: 2,
-          gridRow: 2,
-          gridTemplateColumns: "minmax(480px, 1fr) 326px",
-          minWidth: 0,
-          minHeight: 0,
-          "@media (max-width: 1230px)": {
-            gridTemplateColumns: "minmax(450px, 1fr) 290px",
-          },
-          "@media (max-width: 1040px)": {
-            gridTemplateColumns: "minmax(0, 1fr)",
-          },
-        }}
-      >
-        <Conversation
-          messages={session.messages}
-          provider={session.provider}
-          providerReady={session.providerReady}
-          hasDemo={!!session.demoPath}
-          draft={session.draft}
-          sending={session.sending}
-          canSend={session.canSend}
-          error={session.error}
-          setDraft={session.setDraft}
-          dismissError={() => session.setError(null)}
-          submit={session.submit}
+      <Box sx={{ display: { xs: "none", md: "block" }, gridColumn: 1, gridRow: "1 / 3", minHeight: 0 }}>
+        {sidebar}
+      </Box>
+      <Box sx={{ gridColumn: { xs: 1, md: "2 / -1" }, gridRow: 1, minWidth: 0 }}>
+        <WorkspaceHeader
+          title={headerTitle}
+          status={workspace.status}
+          busy={busy}
+          showDemoInfo={workspace.page === "conversation"}
+          onOpenNavigation={() => setNavigationOpen(true)}
+          onOpenDemoInfo={() => setDemoInfoOpen(true)}
           t={t}
         />
-        <EvidencePanel evidence={session.evidence} t={t} />
       </Box>
+
+      {workspace.page === "settings" ? (
+        <Box sx={{ gridColumn: { xs: 1, md: "2 / -1" }, gridRow: 2, minWidth: 0, minHeight: 0 }}>
+          <SettingsPage settings={workspace.settings} updateSettings={workspace.setSettings} t={t} />
+        </Box>
+      ) : (
+        <>
+          <Box sx={{ gridColumn: { xs: 1, md: 2 }, gridRow: 2, minWidth: 0, minHeight: 0 }}>
+            <Conversation
+              entries={workspace.conversation.entries}
+              draft={workspace.draft}
+              demoPath={workspace.conversation.demoPath}
+              providerReady={workspace.providerReady}
+              activeSession={workspace.activeSessionId !== null}
+              providerKind={workspace.conversation.providerKind}
+              model={workspace.conversation.model}
+              modelOptions={workspace.modelOptions}
+              sending={workspace.sending}
+              canSend={workspace.canSend}
+              error={workspace.error}
+              setDraft={workspace.setDraft}
+              dismissError={() => workspace.setError(null)}
+              chooseDemo={workspace.chooseDemo}
+              selectModel={workspace.selectModel}
+              submit={workspace.submit}
+              t={t}
+            />
+          </Box>
+          <Box sx={{ display: { xs: "none", lg: "block" }, gridColumn: 3, gridRow: 2, minHeight: 0 }}>
+            {demoSidebar}
+          </Box>
+        </>
+      )}
+
+      <Drawer
+        open={navigationOpen}
+        onClose={() => setNavigationOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        sx={{ display: { xs: "block", md: "none" }, "& .MuiDrawer-paper": { width: 248 } }}
+      >
+        {sidebar}
+      </Drawer>
+      <Drawer
+        anchor="right"
+        open={demoInfoOpen}
+        onClose={() => setDemoInfoOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        sx={{ display: { xs: "block", lg: "none" }, "& .MuiDrawer-paper": { width: "min(310px, 88vw)" } }}
+      >
+        {demoSidebar}
+      </Drawer>
     </Box>
   );
 }

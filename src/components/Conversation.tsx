@@ -1,24 +1,35 @@
-import EastRoundedIcon from "@mui/icons-material/EastRounded";
+import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
+import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
+import TerminalRoundedIcon from "@mui/icons-material/TerminalRounded";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
-  Avatar,
   Box,
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   InputBase,
+  Menu,
+  MenuItem,
   Paper,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import type { KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { JsonValue } from "../agent/types";
+import { asObject, toolLabel } from "../app/display";
 import { markdownUrlTransform } from "../app/markdown";
-import { PROVIDER_LABELS, type ProviderDraft } from "../app/state";
-import type { ChatEntry } from "../app/types";
+import { PROVIDER_LABELS } from "../app/state";
+import type { ModelOption, TimelineEntry, ToolTimelineEntry } from "../app/types";
 import type { Translator } from "../i18n";
 
 const MARKDOWN_COMPONENTS: Components = {
@@ -28,40 +39,53 @@ const MARKDOWN_COMPONENTS: Components = {
 };
 
 export function Conversation({
-  messages,
-  provider,
-  providerReady,
-  hasDemo,
+  entries,
   draft,
+  demoPath,
+  providerReady,
+  activeSession,
+  providerKind,
+  model,
+  modelOptions,
   sending,
   canSend,
   error,
   setDraft,
   dismissError,
+  chooseDemo,
+  selectModel,
   submit,
   t,
 }: {
-  messages: ChatEntry[];
-  provider: ProviderDraft;
-  providerReady: boolean;
-  hasDemo: boolean;
+  entries: TimelineEntry[];
   draft: string;
+  demoPath: string;
+  providerReady: boolean;
+  activeSession: boolean;
+  providerKind: ModelOption["providerKind"];
+  model: string;
+  modelOptions: ModelOption[];
   sending: boolean;
   canSend: boolean;
   error: string | null;
   setDraft: (draft: string) => void;
   dismissError: () => void;
+  chooseDemo: () => Promise<void>;
+  selectModel: (option: ModelOption) => Promise<void>;
   submit: () => Promise<void>;
   t: Translator;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [modelAnchor, setModelAnchor] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [entries, sending]);
+
   const handleComposerKeyDown = (
     event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.nativeEvent.isComposing
-    ) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void submit();
     }
@@ -69,79 +93,31 @@ export function Conversation({
 
   return (
     <Box
-      component="section"
+      component="main"
       aria-label={t("chat.ariaLabel")}
-      sx={{
-        display: "grid",
-        minWidth: 0,
-        minHeight: 0,
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
-        "@media (max-width: 1040px)": {
-          minHeight: "calc(100vh - 66px)",
-        },
-      }}
+      sx={{ display: "grid", minWidth: 0, minHeight: 0, gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
-      <Stack
-        direction="row"
-        spacing={2.5}
-        sx={{
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          px: 3.9,
-          pt: 2.9,
-          pb: 2.3,
-          borderBottom: 1,
-          borderColor: "divider",
-          backgroundColor: alpha("#0f1210", 0.55),
-        }}
-      >
-        <Box>
-          <Typography variant="overline">{t("chat.eyebrow")}</Typography>
-          <Typography component="h1" variant="h1" sx={{ mt: 0.45 }}>
-            {t("chat.title")}
-          </Typography>
-        </Box>
-        <Chip label={PROVIDER_LABELS[provider.kind]} />
-      </Stack>
-
       <Box
+        ref={scrollRef}
         aria-live="polite"
-        sx={{
-          minHeight: 0,
-          px: 3.9,
-          pt: 3,
-          pb: 4,
-          overflow: "auto",
-          scrollBehavior: "smooth",
-          scrollbarColor: "#30372f transparent",
-        }}
+        sx={{ minHeight: 0, overflow: "auto", scrollBehavior: "smooth", scrollbarColor: "#343834 transparent" }}
       >
-        {messages.length === 0 ? (
-          <EmptyConversation hasDemo={hasDemo} providerReady={providerReady} t={t} />
-        ) : (
-          messages.map((message) => <Message entry={message} key={message.id} t={t} />)
-        )}
-        {sending && (
-          <Stack direction="row" spacing={1.5} sx={{ mb: 3, alignItems: "center" }}>
-            <Avatar
-              variant="square"
-              sx={(theme) => ({
-                width: 31,
-                height: 31,
-                border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
-                color: "primary.main",
-                backgroundColor: alpha(theme.palette.primary.main, 0.065),
-              })}
-            >
-              <CircularProgress size={16} thickness={4} />
-            </Avatar>
-            <Box className="thinking-bars" aria-label={t("chat.working")}>
-              <span />
-              <span />
-              <span />
-            </Box>
-          </Stack>
-        )}
+        <Box sx={{ width: "min(790px, calc(100% - 36px))", minHeight: "100%", mx: "auto", py: 3.5 }}>
+          {entries.length === 0 ? (
+            <EmptyConversation
+              hasDemo={!!demoPath}
+              providerReady={providerReady}
+              chooseDemo={chooseDemo}
+              t={t}
+            />
+          ) : (
+            <Stack spacing={2.2}>
+              {entries.map((entry) => (
+                <TimelineItem entry={entry} key={entry.id} t={t} />
+              ))}
+            </Stack>
+          )}
+        </Box>
       </Box>
 
       <Box
@@ -150,198 +126,287 @@ export function Conversation({
           event.preventDefault();
           void submit();
         }}
-        sx={{
-          px: 3.75,
-          pt: 1.8,
-          pb: 2,
-          borderTop: 1,
-          borderColor: "divider",
-          backgroundColor: alpha("#0c0f0d", 0.96),
-        }}
+        sx={{ px: { xs: 1.4, sm: 2.4 }, pb: 2, pt: 1, background: "linear-gradient(transparent, #0b0d0b 28%)" }}
       >
-        {error && (
-          <Alert
-            severity="error"
+        <Box sx={{ width: "min(790px, 100%)", mx: "auto" }}>
+          {error && (
+            <Alert
+              severity="error"
+              variant="outlined"
+              action={<Button color="inherit" size="small" onClick={dismissError}>{t("action.dismiss")}</Button>}
+              sx={{ mb: 1 }}
+            >
+              {error}
+            </Alert>
+          )}
+          <Paper
             variant="outlined"
-            action={
-              <Button color="inherit" size="small" onClick={dismissError}>
-                {t("action.dismiss")}
-              </Button>
-            }
-            sx={{ mb: 1 }}
+            sx={(theme) => ({
+              overflow: "hidden",
+              borderRadius: 2.2,
+              borderColor: alpha("#ffffff", 0.13),
+              backgroundColor: "#242724",
+              boxShadow: "0 12px 38px rgba(0,0,0,0.28)",
+              "&:focus-within": { borderColor: alpha(theme.palette.primary.main, 0.42) },
+            })}
           >
-            <Typography component="strong" sx={{ mr: 0.8, color: "error.main", fontSize: "inherit" }}>
-              {t("error.requestFailed")}
-            </Typography>
-            {error}
-          </Alert>
-        )}
-        <Paper
-          variant="outlined"
-          sx={(theme) => ({
-            display: "flex",
-            alignItems: "flex-end",
-            borderColor: alpha("#e6efe6", 0.17),
-            backgroundColor: "#111512",
-            boxShadow: "0 12px 34px rgba(0, 0, 0, 0.18)",
-            transition: theme.transitions.create("border-color", {
-              duration: theme.transitions.duration.shortest,
-            }),
-            "&:focus-within": {
-              borderColor: alpha(theme.palette.primary.main, 0.45),
-            },
-          })}
-        >
-          <InputBase
-            fullWidth
-            multiline
-            minRows={3}
-            maxRows={6}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            disabled={sending}
-            placeholder={composerPlaceholder(hasDemo, providerReady, t)}
-            inputProps={{ "aria-label": t("composer.ariaLabel") }}
-            sx={{
-              flex: 1,
-              px: 1.8,
-              py: 1.35,
-              color: "#dce1dc",
-              fontSize: "0.8rem",
-              lineHeight: 1.5,
-            }}
-          />
-          <Button
-            type="submit"
-            variant="contained"
-            disabled={!canSend}
-            endIcon={<EastRoundedIcon />}
-            sx={{ flex: "0 0 auto", mb: 1, mr: 1, minHeight: 36 }}
-          >
-            {sending ? t("action.analyzing") : t("action.analyze")}
-          </Button>
-        </Paper>
-        <Stack
-          direction="row"
-          spacing={2}
-          sx={{ mt: 0.8, color: "#565e57", justifyContent: "space-between" }}
-        >
-          <Typography variant="caption">{t("composer.sendHint")}</Typography>
-          <Typography variant="caption">{t("composer.evidenceHint")}</Typography>
-        </Stack>
+            <InputBase
+              fullWidth
+              multiline
+              minRows={2}
+              maxRows={7}
+              value={draft}
+              disabled={sending}
+              placeholder={composerPlaceholder(!!demoPath, providerReady, t)}
+              inputProps={{ "aria-label": t("composer.ariaLabel") }}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              sx={{ px: 1.7, pt: 1.35, pb: 0.5, color: "#e0e4e0", fontSize: "0.78rem", lineHeight: 1.55 }}
+            />
+            <Stack direction="row" spacing={0.7} sx={{ px: 1, pb: 0.9, alignItems: "center" }}>
+              <Tooltip title={activeSession ? t("demo.bound") : t("demo.section")}>
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={activeSession || sending}
+                    onClick={() => void chooseDemo()}
+                    aria-label={t("demo.section")}
+                    sx={{ color: "#8b928b" }}
+                  >
+                    <AttachFileRoundedIcon sx={{ fontSize: 18 }} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Typography variant="caption" sx={{ display: { xs: "none", sm: "block" }, color: "#656c65" }}>
+                {t("composer.sendHint")}
+              </Typography>
+              <Stack direction="row" spacing={0.65} sx={{ ml: "auto !important", alignItems: "center" }}>
+                <Button
+                  variant="text"
+                  size="small"
+                  disabled={sending || modelOptions.length === 0}
+                  aria-label={t("provider.model")}
+                  aria-haspopup="menu"
+                  aria-expanded={!!modelAnchor}
+                  onClick={(event: MouseEvent<HTMLElement>) =>
+                    setModelAnchor(event.currentTarget)
+                  }
+                  sx={{
+                    maxWidth: { xs: 135, sm: 230 },
+                    minHeight: 28,
+                    px: 0.8,
+                    color: "#aeb4ae",
+                    fontSize: "0.65rem",
+                  }}
+                >
+                  <Typography noWrap sx={{ fontSize: "inherit" }}>
+                    {model || t("provider.chooseModel")}
+                  </Typography>
+                  <ExpandMoreRoundedIcon sx={{ ml: 0.35, fontSize: 15 }} />
+                </Button>
+                <Menu
+                  anchorEl={modelAnchor}
+                  open={!!modelAnchor}
+                  onClose={() => setModelAnchor(null)}
+                  anchorOrigin={{ vertical: "top", horizontal: "right" }}
+                  transformOrigin={{ vertical: "bottom", horizontal: "right" }}
+                  marginThreshold={8}
+                >
+                  {modelOptions.map((option) => (
+                    <MenuItem
+                      selected={
+                        option.providerKind === providerKind && option.model === model
+                      }
+                      key={`${option.providerKind}:${option.model}`}
+                      onClick={() => {
+                        setModelAnchor(null);
+                        void selectModel(option);
+                      }}
+                    >
+                      <Stack>
+                        <Typography sx={{ fontSize: "0.7rem" }}>{option.model}</Typography>
+                        {!activeSession && (
+                          <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                            {PROVIDER_LABELS[option.providerKind]}
+                          </Typography>
+                        )}
+                      </Stack>
+                    </MenuItem>
+                  ))}
+                </Menu>
+                <IconButton
+                  type="submit"
+                  disabled={!canSend}
+                  aria-label={sending ? t("action.analyzing") : t("action.analyze")}
+                  sx={(theme) => ({
+                    width: 31,
+                    height: 31,
+                    color: canSend ? theme.palette.primary.contrastText : "#676d67",
+                    backgroundColor: canSend ? "primary.main" : alpha("#ffffff", 0.08),
+                    "&:hover": { backgroundColor: "primary.light" },
+                  })}
+                >
+                  {sending ? <CircularProgress size={15} color="inherit" /> : <ArrowUpwardRoundedIcon sx={{ fontSize: 18 }} />}
+                </IconButton>
+              </Stack>
+            </Stack>
+          </Paper>
+        </Box>
       </Box>
     </Box>
   );
 }
 
-function Message({ entry, t }: { entry: ChatEntry; t: Translator }) {
-  const assistant = entry.role === "assistant";
+function TimelineItem({ entry, t }: { entry: TimelineEntry; t: Translator }) {
+  if (entry.kind === "tool") return <ToolEntry entry={entry} t={t} />;
+  if (entry.kind === "user") {
+    return (
+      <Paper
+        component="article"
+        variant="outlined"
+        sx={{ maxWidth: "82%", ml: "auto", px: 1.7, py: 1.15, borderRadius: "13px 13px 3px 13px", backgroundColor: "#252825" }}
+      >
+        <Typography sx={{ color: "#d7dbd7", fontSize: "0.75rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+          {entry.content}
+        </Typography>
+      </Paper>
+    );
+  }
   return (
-    <Stack
-      component="article"
-      direction={assistant ? "row" : "row-reverse"}
-      spacing={1.5}
-      sx={{ maxWidth: 830, mb: 3, ml: assistant ? 0 : "auto", alignItems: "flex-start" }}
-    >
-      <Avatar
-        variant="square"
+    <Stack component="article" direction="row" spacing={1.2} sx={{ alignItems: "flex-start" }}>
+      <Box
         sx={(theme) => ({
-          width: 31,
-          height: 31,
+          display: "grid",
+          width: 27,
+          height: 27,
           flex: "0 0 auto",
-          border: `1px solid ${alpha(assistant ? theme.palette.primary.main : "#ffffff", assistant ? 0.22 : 0.12)}`,
-          color: assistant ? "primary.main" : "#939c95",
-          backgroundColor: assistant
-            ? alpha(theme.palette.primary.main, 0.065)
-            : "#181d19",
-          fontSize: "0.52rem",
+          placeItems: "center",
+          border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+          borderRadius: 1,
+          color: "primary.main",
+          backgroundColor: alpha(theme.palette.primary.main, 0.05),
         })}
       >
-        {assistant ? <MyLocationOutlinedIcon sx={{ fontSize: 17 }} /> : t("chat.you")}
-      </Avatar>
-      {assistant ? (
-        <Box className="markdown-body" sx={{ minWidth: 0, pt: 0.4, color: "#c8cec9", fontSize: "0.8rem", lineHeight: 1.65 }}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
-            components={MARKDOWN_COMPONENTS}
-          >
+        <MyLocationOutlinedIcon sx={{ fontSize: 15 }} />
+      </Box>
+      <Box className="markdown-body" sx={{ minWidth: 0, flex: 1, pt: 0.2, color: "#cbd0cb", fontSize: "0.76rem", lineHeight: 1.72 }}>
+        {entry.content ? (
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform} components={MARKDOWN_COMPONENTS}>
             {entry.content}
           </ReactMarkdown>
-        </Box>
-      ) : (
-        <Paper
-          variant="outlined"
-          sx={{
-            minWidth: 0,
-            px: 1.8,
-            py: 1.35,
-            borderRadius: "5px 1px 5px 5px",
-            backgroundColor: "#151916",
-          }}
-        >
-          <Typography sx={{ color: "#c8cec9", fontSize: "0.8rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
-            {entry.content}
-          </Typography>
-        </Paper>
-      )}
+        ) : (
+          <Box className="thinking-bars" aria-label={t("chat.working")}><span /><span /><span /></Box>
+        )}
+        {entry.status === "streaming" && entry.content && <span className="streaming-cursor" aria-hidden="true" />}
+      </Box>
     </Stack>
+  );
+}
+
+function ToolEntry({ entry, t }: { entry: ToolTimelineEntry; t: Translator }) {
+  const meta = readMeta(entry.result);
+  return (
+    <Accordion sx={{ ml: 4.9, maxWidth: 620, backgroundColor: "#141714" }}>
+      <AccordionSummary expandIcon={<ExpandMoreRoundedIcon sx={{ color: "#717971", fontSize: 17 }} />}>
+        <Stack direction="row" spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
+          <TerminalRoundedIcon sx={{ flex: "0 0 auto", color: entry.status === "error" ? "error.main" : "#768076", fontSize: 16 }} />
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography noWrap sx={{ color: "#abb2ab", fontSize: "0.66rem", fontWeight: 630 }}>
+              {toolLabel(entry.call.name, t)}
+            </Typography>
+            <Typography variant="caption" sx={{ color: "#596159" }}>
+              {t("evidence.pass", { iteration: entry.iteration })}
+            </Typography>
+          </Box>
+          {entry.status === "running" ? (
+            <CircularProgress size={13} thickness={4.5} />
+          ) : (
+            <Typography sx={{ color: entry.status === "success" ? "primary.main" : "error.main", fontSize: "0.55rem", textTransform: "uppercase" }}>
+              {entry.status === "success" ? t("evidence.success") : t("evidence.error")}
+            </Typography>
+          )}
+        </Stack>
+      </AccordionSummary>
+      <AccordionDetails sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
+        <Stack direction="row" sx={{ mb: 0.8, flexWrap: "wrap", gap: 0.5 }}>
+          {meta.sampled && <MetaChip label={t("evidence.sampled")} />}
+          {meta.truncated && <MetaChip label={t("evidence.truncated")} />}
+          {typeof meta.rowCount === "number" && <MetaChip label={t("evidence.rows", { count: meta.rowCount })} />}
+        </Stack>
+        <EvidenceJson title={t("evidence.arguments")} value={formatJsonString(entry.call.arguments)} />
+        {entry.result !== undefined && <EvidenceJson title={t("evidence.resultPreview")} value={previewJson(entry.result, t)} />}
+      </AccordionDetails>
+    </Accordion>
   );
 }
 
 function EmptyConversation({
   hasDemo,
   providerReady,
+  chooseDemo,
   t,
 }: {
   hasDemo: boolean;
   providerReady: boolean;
+  chooseDemo: () => Promise<void>;
   t: Translator;
 }) {
-  const title = !hasDemo
-    ? t("empty.loadTitle")
-    : !providerReady
-      ? t("empty.providerTitle")
-      : t("empty.readyTitle");
-  const detail = !hasDemo
-    ? t("empty.loadDetail")
-    : !providerReady
-      ? t("empty.providerDetail")
-      : t("empty.readyDetail");
-
+  const title = !hasDemo ? t("empty.loadTitle") : !providerReady ? t("empty.providerTitle") : t("empty.readyTitle");
+  const detail = !hasDemo ? t("empty.loadDetail") : !providerReady ? t("empty.providerDetail") : t("empty.readyDetail");
   return (
-    <Stack
-      sx={{ width: "min(540px, 92%)", minHeight: "100%", mx: "auto", py: 4.5, textAlign: "center", alignItems: "center", justifyContent: "center" }}
-    >
-      <Box className="radar-graphic" aria-hidden="true">
-        <span />
-        <span />
-        <MyLocationOutlinedIcon />
-      </Box>
+    <Stack sx={{ minHeight: "calc(100vh - 245px)", textAlign: "center", alignItems: "center", justifyContent: "center" }}>
+      <Box className="radar-graphic" aria-hidden="true"><span /><span /><MyLocationOutlinedIcon /></Box>
       <Typography variant="overline">{t("empty.kicker")}</Typography>
-      <Typography component="h2" sx={{ mt: 1.1, mb: 0.8, color: "#dfe4e0", fontSize: "1.18rem", fontWeight: 580 }}>
+      <Typography component="h2" sx={{ mt: 1, color: "#dfe3df", fontSize: "1.08rem", fontWeight: 650 }}>
         {title}
       </Typography>
-      <Typography sx={{ maxWidth: "49ch", color: "#778078", fontSize: "0.76rem", lineHeight: 1.65 }}>
+      <Typography sx={{ maxWidth: 480, mt: 0.8, color: "#727a72", fontSize: "0.7rem", lineHeight: 1.65 }}>
         {detail}
       </Typography>
-      {hasDemo && providerReady && (
-        <Stack direction="row" sx={{ mt: 2.5, flexWrap: "wrap", justifyContent: "center", gap: 0.75 }}>
-          <Chip label={t("empty.exampleOverview")} sx={{ borderRadius: 999 }} />
-          <Chip label={t("empty.exampleRounds")} sx={{ borderRadius: 999 }} />
-          <Chip label={t("empty.exampleEconomy")} sx={{ borderRadius: 999 }} />
-        </Stack>
+      {!hasDemo && (
+        <Button variant="outlined" startIcon={<AttachFileRoundedIcon />} onClick={() => void chooseDemo()} sx={{ mt: 2 }}>
+          {t("demo.choose")}
+        </Button>
       )}
     </Stack>
   );
 }
 
-function composerPlaceholder(
-  hasDemo: boolean,
-  providerReady: boolean,
-  t: Translator,
-): string {
+function MetaChip({ label }: { label: string }) {
+  return <Chip label={label} color="primary" sx={{ height: 18, "& .MuiChip-label": { px: 0.6 } }} />;
+}
+
+function EvidenceJson({ title, value }: { title: string; value: string }) {
+  return (
+    <Box sx={{ mt: 0.9 }}>
+      <Typography sx={{ mb: 0.45, color: "#666e66", fontSize: "0.53rem", letterSpacing: "0.07em", textTransform: "uppercase" }}>{title}</Typography>
+      <Box component="pre" sx={{ maxHeight: 220, m: 0, p: 1, overflow: "auto", borderRadius: 1, color: "#8e978e", backgroundColor: "#090b09", font: '0.56rem/1.5 "Cascadia Mono", Consolas, monospace', whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        {value}
+      </Box>
+    </Box>
+  );
+}
+
+function readMeta(value: JsonValue | undefined): { sampled: boolean; truncated: boolean; rowCount?: number } {
+  const result = asObject(value);
+  const meta = asObject(result?.meta);
+  return {
+    sampled: meta?.sampled === true,
+    truncated: meta?.truncated === true,
+    rowCount: typeof meta?.row_count === "number" ? meta.row_count : undefined,
+  };
+}
+
+function formatJsonString(value: string): string {
+  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+}
+
+function previewJson(value: JsonValue, t: Translator): string {
+  const serialized = JSON.stringify(value, null, 2);
+  return serialized.length > 2600 ? `${serialized.slice(0, 2600)}\n${t("evidence.previewLimited")}` : serialized;
+}
+
+function composerPlaceholder(hasDemo: boolean, providerReady: boolean, t: Translator): string {
   if (!hasDemo) return t("composer.needDemo");
   if (!providerReady) return t("composer.needProvider");
   return t("composer.ready");

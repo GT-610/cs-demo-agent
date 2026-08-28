@@ -1,22 +1,60 @@
-import type { JsonValue, ToolCall } from "../agent/types";
+import type {
+  AgentRuntimeState,
+  JsonValue,
+  ProviderKind,
+  ToolCall,
+} from "../agent/types";
+import type { DemoToolResult } from "../bridge/tauri";
 import type { TranslationKey, TranslationParams } from "../i18n";
 
-export interface ChatEntry {
-  id: number;
-  role: "user" | "assistant";
+interface TimelineEntryBase {
+  id: string;
+}
+
+export interface UserTimelineEntry extends TimelineEntryBase {
+  kind: "user";
   content: string;
 }
 
-export interface EvidenceEntry {
-  key: string;
+export interface AssistantTimelineEntry extends TimelineEntryBase {
+  kind: "assistant";
+  content: string;
+  status: "streaming" | "complete";
+  iteration: number;
+}
+
+export interface ToolTimelineEntry extends TimelineEntryBase {
+  kind: "tool";
   call: ToolCall;
   iteration: number;
   status: "running" | "success" | "error";
   result?: JsonValue;
 }
 
+export type TimelineEntry =
+  | UserTimelineEntry
+  | AssistantTimelineEntry
+  | ToolTimelineEntry;
+
+export interface ConversationState {
+  demoPath: string;
+  header: DemoToolResult | null;
+  players: DemoToolResult | null;
+  providerKind: ProviderKind;
+  model: string;
+  entries: TimelineEntry[];
+  runtimeState?: AgentRuntimeState;
+}
+
 export interface StatusMessage {
   key: TranslationKey;
   params?: TranslationParams;
   toolName?: string;
+}
+
+export type WorkspacePage = "conversation" | "settings";
+
+export interface ModelOption {
+  providerKind: ProviderKind;
+  model: string;
 }

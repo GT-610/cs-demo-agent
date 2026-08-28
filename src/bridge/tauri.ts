@@ -2,11 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
-  HttpJsonRequest,
-  HttpJsonResponse,
   HttpStreamEvent,
   HttpStreamTransport,
-  HttpTransport,
   JsonObject,
   JsonValue,
   ToolExecutor,
@@ -44,13 +41,6 @@ const REQUEST_TOOLS = new Set([
   "query_ticks",
   "query_grenades",
 ]);
-
-export function createHttpTransport(
-  invokeCommand: InvokeFunction = invoke,
-): HttpTransport {
-  return (request: HttpJsonRequest) =>
-    invokeCommand<HttpJsonResponse>("send_http_json", { request });
-}
 
 interface StreamChannel {
   onmessage: (event: HttpStreamEvent) => void;

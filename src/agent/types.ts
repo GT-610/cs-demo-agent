@@ -97,11 +97,6 @@ export interface HttpJsonRequest {
   timeoutMs: number;
 }
 
-export interface HttpJsonResponse {
-  status: number;
-  body: JsonValue;
-}
-
 export type HttpStreamEvent =
   | { type: "started"; status: number }
   | { type: "data"; data: JsonValue }
@@ -110,10 +105,6 @@ export type HttpStreamEvent =
 export interface HttpStreamResponse {
   status: number;
 }
-
-export type HttpTransport = (
-  request: HttpJsonRequest,
-) => Promise<HttpJsonResponse>;
 
 export type HttpStreamTransport = (
   request: HttpJsonRequest,
