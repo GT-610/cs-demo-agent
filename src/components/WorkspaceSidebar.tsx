@@ -70,6 +70,14 @@ export function WorkspaceSidebar({
   };
 
   const closeActions = () => setActions(null);
+  const closeRenameDialog = () => {
+    setRenameTarget(null);
+    setActionError(null);
+  };
+  const closeDeleteDialog = () => {
+    setDeleteTarget(null);
+    setActionError(null);
+  };
 
   return (
     <Box
@@ -212,6 +220,7 @@ export function WorkspaceSidebar({
         <MenuItem
           onClick={() => {
             if (actions) {
+              setActionError(null);
               setRenameTarget(actions.session);
               setRenameValue(actions.session.title);
             }
@@ -223,7 +232,10 @@ export function WorkspaceSidebar({
         </MenuItem>
         <MenuItem
           onClick={() => {
-            if (actions) setDeleteTarget(actions.session);
+            if (actions) {
+              setActionError(null);
+              setDeleteTarget(actions.session);
+            }
             closeActions();
           }}
           sx={{ color: "error.main" }}
@@ -233,7 +245,7 @@ export function WorkspaceSidebar({
         </MenuItem>
       </Menu>
 
-      <Dialog open={!!renameTarget} onClose={() => setRenameTarget(null)} fullWidth maxWidth="xs">
+      <Dialog open={!!renameTarget} onClose={closeRenameDialog} fullWidth maxWidth="xs">
         <DialogTitle>{t("sessions.renameTitle")}</DialogTitle>
         <DialogContent>
           <TextField
@@ -251,21 +263,21 @@ export function WorkspaceSidebar({
               if (event.key === "Enter" && renameValue.trim() && renameTarget) {
                 event.preventDefault();
                 void onRenameSession(renameTarget.id, renameValue)
-                  .then(() => setRenameTarget(null))
+                  .then(closeRenameDialog)
                   .catch((caught) => setActionError(String(caught)));
               }
             }}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setRenameTarget(null)}>{t("action.cancel")}</Button>
+          <Button onClick={closeRenameDialog}>{t("action.cancel")}</Button>
           <Button
             variant="contained"
             disabled={!renameValue.trim()}
             onClick={() => {
               if (!renameTarget) return;
               void onRenameSession(renameTarget.id, renameValue)
-                .then(() => setRenameTarget(null))
+                .then(closeRenameDialog)
                 .catch((caught) => setActionError(String(caught)));
             }}
           >
@@ -274,22 +286,27 @@ export function WorkspaceSidebar({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} fullWidth maxWidth="xs">
+      <Dialog open={!!deleteTarget} onClose={closeDeleteDialog} fullWidth maxWidth="xs">
         <DialogTitle>{t("sessions.deleteTitle")}</DialogTitle>
         <DialogContent>
           <DialogContentText>
             {t("sessions.deleteDetail", { title: deleteTarget?.title ?? "" })}
           </DialogContentText>
+          {actionError && (
+            <DialogContentText sx={{ mt: 1.5, color: "error.main" }}>
+              {actionError}
+            </DialogContentText>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>{t("action.cancel")}</Button>
+          <Button onClick={closeDeleteDialog}>{t("action.cancel")}</Button>
           <Button
             color="error"
             variant="contained"
             onClick={() => {
               if (!deleteTarget) return;
               void onDeleteSession(deleteTarget.id)
-                .then(() => setDeleteTarget(null))
+                .then(closeDeleteDialog)
                 .catch((caught) => setActionError(String(caught)));
             }}
           >

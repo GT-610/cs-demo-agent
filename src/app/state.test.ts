@@ -48,6 +48,14 @@ describe("application state helpers", () => {
     expect(getDefaultModel(settings)).toBe("model-b");
   });
 
+  test("falls back when persisted settings contain an unsupported locale", () => {
+    const settings = normalizeSettings(
+      { ...createDefaultSettings("en"), locale: "fr" as "en" },
+      "zh-CN",
+    );
+    expect(settings.locale).toBe("zh-CN");
+  });
+
   test("normalizes model lists and updates profiles by identifier", () => {
     expect(parseModelList("gpt-a, gpt-b\ngpt-a\n")).toEqual([
       "gpt-a",

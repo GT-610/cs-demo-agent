@@ -35,6 +35,7 @@ pub fn run() {
             http::stream_http_json,
             persistence::load_workspace,
             persistence::load_session,
+            persistence::save_provider_credentials,
             persistence::save_settings,
             persistence::create_session,
             persistence::rename_session,

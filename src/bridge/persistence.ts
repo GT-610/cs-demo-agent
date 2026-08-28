@@ -5,6 +5,7 @@ import type { InvokeFunction } from "./tauri";
 
 export interface StoredProviderProfile {
   id: string;
+  credentialRef: string;
   name: string;
   kind: ProviderKind;
   baseUrl: string;
@@ -76,6 +77,9 @@ export async function loadStoredSession(
   id: string,
   invokeCommand?: InvokeFunction,
 ): Promise<SessionDetail> {
+  if (!canInvoke(invokeCommand)) {
+    throw new Error("Saved sessions require the Tauri desktop host");
+  }
   return getInvoker(invokeCommand)<SessionDetail>("load_session", { id });
 }
 
@@ -84,7 +88,19 @@ export async function saveStoredSettings(
   invokeCommand?: InvokeFunction,
 ): Promise<void> {
   if (!canInvoke(invokeCommand)) return;
-  await getInvoker(invokeCommand)<void>("save_settings", { settings });
+  const invoker = getInvoker(invokeCommand);
+  await invoker<void>("save_provider_credentials", {
+    credentials: settings.providers.map((profile) => ({
+      credentialRef: profile.credentialRef,
+      apiKey: profile.apiKey,
+    })),
+  });
+  await invoker<void>("save_settings", {
+    settings: {
+      ...settings,
+      providers: settings.providers.map(({ apiKey: _apiKey, ...profile }) => profile),
+    },
+  });
 }
 
 export async function createStoredSession(
@@ -92,10 +108,7 @@ export async function createStoredSession(
   invokeCommand?: InvokeFunction,
 ): Promise<SessionSummary> {
   if (!canInvoke(invokeCommand)) {
-    return {
-      ...input,
-      updatedAt: input.createdAt,
-    };
+    throw new Error("Saved sessions require the Tauri desktop host");
   }
   return getInvoker(invokeCommand)<SessionSummary>("create_session", { input });
 }

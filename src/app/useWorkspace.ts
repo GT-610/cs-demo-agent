@@ -84,6 +84,7 @@ export function useWorkspace(initialLocale: Locale) {
   const settingsRef = useRef(settings);
   const settingsDraftRef = useRef(settingsDraft);
   const settingsSavingRef = useRef(false);
+  const sendingRef = useRef(false);
   const conversationRef = useRef(conversation);
   const activeSessionIdRef = useRef<string | null>(null);
   const runtimeRef = useRef<RuntimeCache | null>(null);
@@ -109,12 +110,10 @@ export function useWorkspace(initialLocale: Locale) {
 
   const updateSettingsDraft = useCallback(
     (update: (current: StoredSettings) => StoredSettings) => {
-      setSettingsDraftState((current) => {
-        const next = update(current);
-        settingsDraftRef.current = next;
-        setSettingsDirty(!settingsEqual(settingsRef.current, next));
-        return next;
-      });
+      const next = update(settingsDraftRef.current);
+      settingsDraftRef.current = next;
+      setSettingsDraftState(next);
+      setSettingsDirty(!settingsEqual(settingsRef.current, next));
       setSettingsSaveError(null);
     },
     [],
@@ -371,7 +370,7 @@ export function useWorkspace(initialLocale: Locale) {
       !initial.demoPath ||
       !profile ||
       !isProviderReady(profile, initial.model) ||
-      sending ||
+      sendingRef.current ||
       demoLoading
     ) {
       return;
@@ -391,6 +390,7 @@ export function useWorkspace(initialLocale: Locale) {
     }));
     setDraft("");
     setError(null);
+    sendingRef.current = true;
     setSending(true);
     setStatus({ key: "status.planning" });
 
@@ -454,9 +454,10 @@ export function useWorkspace(initialLocale: Locale) {
         }
       }
     } finally {
+      sendingRef.current = false;
       if (revisionRef.current === revision) setSending(false);
     }
-  }, [demoLoading, draft, mutateConversation, sending, setActiveSessionId]);
+  }, [demoLoading, draft, mutateConversation, setActiveSessionId]);
 
   const profile = getProviderProfile(settings, conversation.providerId);
   const providerReady = isProviderReady(profile, conversation.model);

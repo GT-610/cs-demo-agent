@@ -51,6 +51,7 @@ describe("persistence bridge", () => {
         providers: [
           {
             id: "provider-openai",
+            credentialRef: "provider-openai",
             name: "OpenAI",
             kind: "openai-responses",
             baseUrl: "https://api.openai.com/v1",
@@ -90,6 +91,7 @@ describe("persistence bridge", () => {
     expect(calls.map((call) => call.command)).toEqual([
       "load_workspace",
       "load_session",
+      "save_provider_credentials",
       "save_settings",
       "create_session",
       "rename_session",
@@ -97,15 +99,19 @@ describe("persistence bridge", () => {
       "delete_session",
     ]);
     expect(calls[1]?.args).toEqual({ id: "session-1" });
-    expect(calls[4]?.args).toEqual({
+    expect(calls[2]?.args).toEqual({
+      credentials: [{ credentialRef: "provider-openai", apiKey: "key" }],
+    });
+    expect(JSON.stringify(calls[3]?.args)).not.toContain("apiKey");
+    expect(calls[5]?.args).toEqual({
       input: { id: "session-1", title: "Renamed", updatedAt: 2 },
     });
   });
 
-  test("uses deterministic browser fallbacks for development", async () => {
+  test("does not create browser sessions that cannot be reopened", async () => {
     expect(await loadWorkspace()).toEqual({ sessions: [] });
-    expect(
-      await createStoredSession({
+    await expect(
+      createStoredSession({
         id: "local",
         title: "Local",
         demoPath: "local.dem",
@@ -113,14 +119,7 @@ describe("persistence bridge", () => {
         model: "claude-test",
         createdAt: 10,
       }),
-    ).toEqual({
-      id: "local",
-      title: "Local",
-      demoPath: "local.dem",
-      providerId: "provider-anthropic",
-      model: "claude-test",
-      createdAt: 10,
-      updatedAt: 10,
-    });
+    ).rejects.toThrow("Tauri desktop host");
+    await expect(loadStoredSession("local")).rejects.toThrow("Tauri desktop host");
   });
 });

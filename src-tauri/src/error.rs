@@ -14,6 +14,8 @@ pub enum AppError {
     Serialization(String),
     #[error("database error: {0}")]
     Database(String),
+    #[error("credential store error: {0}")]
+    Credential(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;

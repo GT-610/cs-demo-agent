@@ -25,6 +25,7 @@ export function createProviderProfile(
 ): StoredProviderProfile {
   return {
     id,
+    credentialRef: id,
     name: "",
     kind,
     baseUrl: "",
@@ -60,7 +61,10 @@ export function normalizeSettings(
   )
     ? settings.defaultProviderId
     : providers[0]?.id ?? null;
-  return { locale: settings.locale, defaultProviderId, providers };
+  const normalizedLocale = settings.locale === "en" || settings.locale === "zh-CN"
+    ? settings.locale
+    : locale;
+  return { locale: normalizedLocale, defaultProviderId, providers };
 }
 
 export function getProviderProfile(
@@ -149,11 +153,18 @@ export function isProviderReady(
 
 export function validateSettings(settings: StoredSettings): SettingsValidationIssue | null {
   const ids = new Set<string>();
+  const credentialRefs = new Set<string>();
   for (const profile of settings.providers) {
-    if (!profile.id.trim() || ids.has(profile.id)) {
+    if (
+      !profile.id.trim() ||
+      ids.has(profile.id) ||
+      !profile.credentialRef.trim() ||
+      credentialRefs.has(profile.credentialRef)
+    ) {
       return { type: "duplicateProviderId" };
     }
     ids.add(profile.id);
+    credentialRefs.add(profile.credentialRef);
     if (!profile.name.trim()) return { type: "providerName" };
     if (!isProviderReady(profile, profile.models[0] ?? "")) {
       return {
@@ -182,6 +193,7 @@ function sanitizeProfile(profile: StoredProviderProfile): StoredProviderProfile 
   return {
     ...profile,
     id: profile.id.trim(),
+    credentialRef: profile.credentialRef?.trim() || profile.id.trim(),
     name: profile.name.trim(),
     baseUrl: profile.baseUrl.trim(),
     models: [...new Set(profile.models.map((model) => model.trim()).filter(Boolean))].slice(

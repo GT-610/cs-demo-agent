@@ -199,13 +199,19 @@ impl SseDecoder {
 }
 
 fn find_event_end(bytes: &[u8]) -> Option<(usize, usize)> {
-    if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-        return Some((index, 4));
-    }
-    bytes
+    let crlf = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| (index, 4));
+    let lf = bytes
         .windows(2)
         .position(|window| window == b"\n\n")
-        .map(|index| (index, 2))
+        .map(|index| (index, 2));
+    match (crlf, lf) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(separator), None) | (None, Some(separator)) => Some(separator),
+        (None, None) => None,
+    }
 }
 
 fn parse_sse_event(bytes: &[u8]) -> AppResult<Option<Value>> {
@@ -415,6 +421,15 @@ mod tests {
             .push(b"event: update\r\ndata: {\"value\":\r\ndata: 42}\r\n\r\n")
             .expect("decode event");
         assert_eq!(values, vec![json!({ "value": 42 })]);
+    }
+
+    #[test]
+    fn sse_decoder_uses_the_earliest_supported_separator() {
+        let mut decoder = SseDecoder::default();
+        let values = decoder
+            .push(b"data: {\"value\":1}\n\ndata: {\"value\":2}\r\n\r\n")
+            .expect("decode mixed separators");
+        assert_eq!(values, vec![json!({ "value": 1 }), json!({ "value": 2 })]);
     }
 
     #[test]

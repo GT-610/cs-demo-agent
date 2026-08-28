@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf, sync::Mutex};
 
+use keyring::Entry;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,7 +16,8 @@ const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MESSAGES: usize = 10_000;
 const MAX_MODELS_PER_PROVIDER: usize = 32;
 const MAX_PROVIDERS: usize = 64;
-const SETTINGS_SCHEMA_VERSION: u32 = 2;
+const SETTINGS_SCHEMA_VERSION: u32 = 3;
+const CREDENTIAL_SERVICE: &str = "com.gt610.cs-demo-agent";
 
 pub struct DatabaseState {
     connection: Mutex<Connection>,
@@ -26,9 +28,9 @@ impl DatabaseState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| AppError::Database(error.to_string()))?;
         }
-        let connection =
+        let mut connection =
             Connection::open(path).map_err(|error| AppError::Database(error.to_string()))?;
-        initialize_connection(&connection)?;
+        initialize_connection(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -36,9 +38,9 @@ impl DatabaseState {
 
     #[cfg(test)]
     fn in_memory() -> AppResult<Self> {
-        let connection =
+        let mut connection =
             Connection::open_in_memory().map_err(|error| AppError::Database(error.to_string()))?;
-        initialize_connection(&connection)?;
+        initialize_connection(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -60,6 +62,19 @@ impl DatabaseState {
 #[serde(rename_all = "camelCase")]
 pub struct StoredProviderSettings {
     pub id: String,
+    pub credential_ref: String,
+    pub name: String,
+    pub kind: String,
+    pub base_url: String,
+    pub models: Vec<String>,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedProviderSettings {
+    pub id: String,
+    pub credential_ref: String,
     pub name: String,
     pub kind: String,
     pub base_url: String,
@@ -74,6 +89,33 @@ pub struct StoredSettings {
     pub locale: String,
     pub default_provider_id: Option<String>,
     pub providers: Vec<StoredProviderSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedSettings {
+    pub locale: String,
+    pub default_provider_id: Option<String>,
+    pub providers: Vec<ResolvedProviderSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCredentialInput {
+    pub credential_ref: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyProviderSettings {
+    id: String,
+    name: String,
+    kind: String,
+    base_url: String,
+    api_key: String,
+    models: Vec<String>,
+    max_output_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,7 +151,7 @@ pub struct SessionDetail {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSnapshot {
-    pub settings: Option<StoredSettings>,
+    pub settings: Option<ResolvedSettings>,
     pub sessions: Vec<SessionSummary>,
 }
 
@@ -149,11 +191,18 @@ pub fn load_workspace(state: State<'_, DatabaseState>) -> Result<WorkspaceSnapsh
     state
         .with_connection(|connection| {
             Ok(WorkspaceSnapshot {
-                settings: load_settings_inner(connection)?,
+                settings: load_settings_inner(connection)?
+                    .map(resolve_settings)
+                    .transpose()?,
                 sessions: list_sessions_inner(connection)?,
             })
         })
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn save_provider_credentials(credentials: Vec<ProviderCredentialInput>) -> Result<(), String> {
+    save_provider_credentials_inner(&credentials).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -210,24 +259,95 @@ pub fn save_session_content(
         .map_err(|error| error.to_string())
 }
 
-fn initialize_connection(connection: &Connection) -> AppResult<()> {
+fn resolve_settings(settings: StoredSettings) -> AppResult<ResolvedSettings> {
+    resolve_settings_with(settings, load_provider_credential)
+}
+
+fn resolve_settings_with(
+    settings: StoredSettings,
+    mut load_credential: impl FnMut(&str) -> AppResult<String>,
+) -> AppResult<ResolvedSettings> {
+    let providers = settings
+        .providers
+        .into_iter()
+        .map(|provider| {
+            let api_key = load_credential(&provider.credential_ref)?;
+            Ok(ResolvedProviderSettings {
+                id: provider.id,
+                credential_ref: provider.credential_ref,
+                name: provider.name,
+                kind: provider.kind,
+                base_url: provider.base_url,
+                api_key,
+                models: provider.models,
+                max_output_tokens: provider.max_output_tokens,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(ResolvedSettings {
+        locale: settings.locale,
+        default_provider_id: settings.default_provider_id,
+        providers,
+    })
+}
+
+fn save_provider_credentials_inner(credentials: &[ProviderCredentialInput]) -> AppResult<()> {
+    if credentials.len() > MAX_PROVIDERS {
+        return Err(AppError::InvalidInput(format!(
+            "cannot save more than {MAX_PROVIDERS} provider credentials"
+        )));
+    }
+    let mut references = std::collections::HashSet::new();
+    for credential in credentials {
+        validate_id(&credential.credential_ref)?;
+        validate_text(
+            &credential.api_key,
+            "provider API key",
+            MAX_PATH_CHARS,
+            true,
+        )?;
+        if !references.insert(credential.credential_ref.as_str()) {
+            return Err(AppError::InvalidInput(
+                "provider credentials contain duplicate references".to_string(),
+            ));
+        }
+    }
+    for credential in credentials {
+        let entry = credential_entry(&credential.credential_ref)?;
+        if credential.api_key.is_empty() {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => return Err(AppError::Credential(error.to_string())),
+            }
+        } else {
+            entry
+                .set_password(&credential.api_key)
+                .map_err(|error| AppError::Credential(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+fn load_provider_credential(reference: &str) -> AppResult<String> {
+    match credential_entry(reference)?.get_password() {
+        Ok(api_key) => Ok(api_key),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(error) => Err(AppError::Credential(error.to_string())),
+    }
+}
+
+fn credential_entry(reference: &str) -> AppResult<Entry> {
+    validate_id(reference)?;
+    Entry::new(CREDENTIAL_SERVICE, reference)
+        .map_err(|error| AppError::Credential(error.to_string()))
+}
+
+fn initialize_connection(connection: &mut Connection) -> AppResult<()> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS settings (
-                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                 locale TEXT NOT NULL,
-                 provider_kind TEXT NOT NULL,
-                 base_url TEXT NOT NULL,
-                 api_key TEXT NOT NULL,
-                 model TEXT NOT NULL,
-                 max_output_tokens INTEGER NOT NULL,
-                 providers_json TEXT,
-                 default_provider_id TEXT,
-                 schema_version INTEGER NOT NULL DEFAULT 1
-             );
              CREATE TABLE IF NOT EXISTS sessions (
                  id TEXT PRIMARY KEY,
                  title TEXT NOT NULL,
@@ -252,14 +372,7 @@ fn initialize_connection(connection: &Connection) -> AppResult<()> {
              );",
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
-    let _ = ensure_column(connection, "settings", "providers_json", "TEXT")?;
-    let _ = ensure_column(connection, "settings", "default_provider_id", "TEXT")?;
-    let _ = ensure_column(
-        connection,
-        "settings",
-        "schema_version",
-        "INTEGER NOT NULL DEFAULT 1",
-    )?;
+    initialize_settings_table(connection)?;
     let _ = ensure_column(
         connection,
         "sessions",
@@ -277,6 +390,184 @@ fn initialize_connection(connection: &Connection) -> AppResult<()> {
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| AppError::Database(error.to_string()))?;
     Ok(())
+}
+
+fn initialize_settings_table(connection: &mut Connection) -> AppResult<()> {
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if !exists {
+        create_settings_table(connection)?;
+        return Ok(());
+    }
+
+    let columns = table_columns(connection, "settings")?;
+    let current_columns = [
+        "id",
+        "locale",
+        "providers_json",
+        "default_provider_id",
+        "schema_version",
+    ];
+    if !columns.contains("api_key")
+        && current_columns
+            .iter()
+            .all(|column| columns.contains(*column))
+    {
+        return Ok(());
+    }
+
+    let locale = connection
+        .query_row("SELECT locale FROM settings WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .unwrap_or_else(|| "en".to_string());
+    let providers_json = if columns.contains("providers_json") {
+        connection
+            .query_row(
+                "SELECT providers_json FROM settings WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .flatten()
+    } else {
+        None
+    };
+    let default_provider_id = if columns.contains("default_provider_id") {
+        connection
+            .query_row(
+                "SELECT default_provider_id FROM settings WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .flatten()
+    } else {
+        None
+    };
+    let settings = migrate_legacy_settings(locale, default_provider_id, providers_json)?;
+    let providers_json = serde_json::to_string(&settings.providers)
+        .map_err(|error| AppError::Serialization(error.to_string()))?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE settings RENAME TO settings_legacy_plaintext;
+             CREATE TABLE settings (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 locale TEXT NOT NULL,
+                 providers_json TEXT NOT NULL,
+                 default_provider_id TEXT,
+                 schema_version INTEGER NOT NULL
+             );",
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    transaction
+        .execute(
+            "INSERT INTO settings (id, locale, providers_json, default_provider_id, schema_version)
+             VALUES (1, ?1, ?2, ?3, ?4)",
+            params![
+                settings.locale,
+                providers_json,
+                settings.default_provider_id,
+                SETTINGS_SCHEMA_VERSION,
+            ],
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    transaction
+        .execute_batch("DROP TABLE settings_legacy_plaintext;")
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    transaction
+        .commit()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(())
+}
+
+fn create_settings_table(connection: &Connection) -> AppResult<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE settings (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 locale TEXT NOT NULL,
+                 providers_json TEXT NOT NULL,
+                 default_provider_id TEXT,
+                 schema_version INTEGER NOT NULL
+             );",
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(())
+}
+
+fn migrate_legacy_settings(
+    locale: String,
+    default_provider_id: Option<String>,
+    providers_json: Option<String>,
+) -> AppResult<StoredSettings> {
+    migrate_legacy_settings_with(
+        locale,
+        default_provider_id,
+        providers_json,
+        save_provider_credentials_inner,
+    )
+}
+
+fn migrate_legacy_settings_with(
+    locale: String,
+    default_provider_id: Option<String>,
+    providers_json: Option<String>,
+    mut save_credentials: impl FnMut(&[ProviderCredentialInput]) -> AppResult<()>,
+) -> AppResult<StoredSettings> {
+    let legacy_providers = providers_json
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| serde_json::from_str::<Vec<LegacyProviderSettings>>(&value).ok())
+        .unwrap_or_default();
+    let credentials = legacy_providers
+        .iter()
+        .map(|provider| ProviderCredentialInput {
+            credential_ref: provider.id.clone(),
+            api_key: provider.api_key.clone(),
+        })
+        .collect::<Vec<_>>();
+    let providers = legacy_providers
+        .into_iter()
+        .map(|provider| StoredProviderSettings {
+            credential_ref: provider.id.clone(),
+            id: provider.id,
+            name: provider.name,
+            kind: provider.kind,
+            base_url: provider.base_url,
+            models: provider.models,
+            max_output_tokens: provider.max_output_tokens,
+        })
+        .collect::<Vec<_>>();
+    let settings = StoredSettings {
+        locale,
+        default_provider_id,
+        providers,
+    };
+    if validate_settings(&settings).is_err() {
+        return Ok(StoredSettings {
+            locale: settings.locale,
+            default_provider_id: None,
+            providers: Vec::new(),
+        });
+    }
+    save_credentials(&credentials)?;
+    Ok(settings)
 }
 
 fn load_settings_inner(connection: &Connection) -> AppResult<Option<StoredSettings>> {
@@ -320,49 +611,20 @@ fn load_settings_inner(connection: &Connection) -> AppResult<Option<StoredSettin
 
 fn save_settings_inner(connection: &Connection, settings: &StoredSettings) -> AppResult<()> {
     validate_settings(settings)?;
-    let default_provider = settings.default_provider_id.as_ref().and_then(|id| {
-        settings
-            .providers
-            .iter()
-            .find(|provider| &provider.id == id)
-    });
-    let legacy_provider = default_provider.or_else(|| settings.providers.first());
     let providers_json = serde_json::to_string(&settings.providers)
         .map_err(|error| AppError::Serialization(error.to_string()))?;
     connection
         .execute(
             "INSERT INTO settings (
-                 id, locale, provider_kind, base_url, api_key, model, max_output_tokens,
-                 providers_json, default_provider_id, schema_version
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 id, locale, providers_json, default_provider_id, schema_version
+             ) VALUES (1, ?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
                  locale = excluded.locale,
-                 provider_kind = excluded.provider_kind,
-                 base_url = excluded.base_url,
-                 api_key = excluded.api_key,
-                 model = excluded.model,
-                 max_output_tokens = excluded.max_output_tokens,
                  providers_json = excluded.providers_json,
                  default_provider_id = excluded.default_provider_id,
                  schema_version = excluded.schema_version",
             params![
                 settings.locale,
-                legacy_provider
-                    .map(|provider| provider.kind.as_str())
-                    .unwrap_or(""),
-                legacy_provider
-                    .map(|provider| provider.base_url.as_str())
-                    .unwrap_or(""),
-                legacy_provider
-                    .map(|provider| provider.api_key.as_str())
-                    .unwrap_or(""),
-                legacy_provider
-                    .and_then(|provider| provider.models.first())
-                    .map(String::as_str)
-                    .unwrap_or(""),
-                legacy_provider
-                    .map(|provider| provider.max_output_tokens)
-                    .unwrap_or(4096),
                 providers_json,
                 settings.default_provider_id,
                 SETTINGS_SCHEMA_VERSION,
@@ -578,13 +840,20 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
         )));
     }
     let mut ids = std::collections::HashSet::new();
+    let mut credential_refs = std::collections::HashSet::new();
     for provider in &settings.providers {
         validate_id(&provider.id)?;
+        validate_id(&provider.credential_ref)?;
         validate_text(&provider.name, "provider name", MAX_TITLE_CHARS, false)?;
         validate_provider_kind(&provider.kind)?;
         if !ids.insert(provider.id.as_str()) {
             return Err(AppError::InvalidInput(
                 "provider settings contain duplicate identifiers".to_string(),
+            ));
+        }
+        if !credential_refs.insert(provider.credential_ref.as_str()) {
+            return Err(AppError::InvalidInput(
+                "provider settings contain duplicate credential references".to_string(),
             ));
         }
         validate_text(
@@ -593,7 +862,6 @@ fn validate_settings(settings: &StoredSettings) -> AppResult<()> {
             MAX_PATH_CHARS,
             false,
         )?;
-        validate_text(&provider.api_key, "provider API key", MAX_PATH_CHARS, true)?;
         if provider.models.is_empty() || provider.models.len() > MAX_MODELS_PER_PROVIDER {
             return Err(AppError::InvalidInput(format!(
                 "provider must contain between one and {MAX_MODELS_PER_PROVIDER} models"
@@ -644,16 +912,8 @@ fn ensure_column(
     column: &str,
     definition: &str,
 ) -> AppResult<bool> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    for existing in columns {
-        if existing.map_err(|error| AppError::Database(error.to_string()))? == column {
-            return Ok(false);
-        }
+    if table_columns(connection, table)?.contains(column) {
+        return Ok(false);
     }
     connection
         .execute_batch(&format!(
@@ -661,6 +921,21 @@ fn ensure_column(
         ))
         .map_err(|error| AppError::Database(error.to_string()))?;
     Ok(true)
+}
+
+fn table_columns(
+    connection: &Connection,
+    table: &str,
+) -> AppResult<std::collections::HashSet<String>> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    columns
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|error| AppError::Database(error.to_string()))
 }
 
 fn validate_messages(messages: &[PersistedMessage]) -> AppResult<()> {
@@ -754,10 +1029,10 @@ mod tests {
             default_provider_id: Some("provider-openai".to_string()),
             providers: vec![StoredProviderSettings {
                 id: "provider-openai".to_string(),
+                credential_ref: "provider-openai".to_string(),
                 name: "OpenAI".to_string(),
                 kind: "openai-responses".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
-                api_key: "test-key".to_string(),
                 models: vec!["gpt-test".to_string(), "gpt-next".to_string()],
                 max_output_tokens: 4096,
             }],
@@ -785,6 +1060,70 @@ mod tests {
             .with_connection(|connection| load_settings_inner(connection))
             .expect("load settings");
         assert_eq!(loaded, Some(settings()));
+        state
+            .with_connection(|connection| {
+                assert!(!table_columns(connection, "settings")?.contains("api_key"));
+                let providers_json: String = connection
+                    .query_row(
+                        "SELECT providers_json FROM settings WHERE id = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                assert!(!providers_json.contains("apiKey"));
+                Ok(())
+            })
+            .expect("inspect persisted settings");
+    }
+
+    #[test]
+    fn provider_credentials_are_resolved_outside_sqlite() {
+        let resolved = resolve_settings_with(settings(), |reference| {
+            assert_eq!(reference, "provider-openai");
+            Ok("test-key".to_string())
+        })
+        .expect("resolve settings");
+        assert_eq!(resolved.providers[0].api_key, "test-key");
+        assert_eq!(resolved.providers[0].credential_ref, "provider-openai");
+    }
+
+    #[test]
+    fn legacy_provider_keys_move_to_credentials_before_sqlite_migration() {
+        let providers_json = serde_json::json!([{
+            "id": "provider-openai",
+            "name": "OpenAI",
+            "kind": "openai-responses",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "test-key",
+            "models": ["gpt-test"],
+            "maxOutputTokens": 4096
+        }])
+        .to_string();
+        let mut saved_credentials = Vec::new();
+        let migrated = migrate_legacy_settings_with(
+            "en".to_string(),
+            Some("provider-openai".to_string()),
+            Some(providers_json),
+            |credentials| {
+                saved_credentials.extend(credentials.iter().map(|credential| {
+                    (
+                        credential.credential_ref.clone(),
+                        credential.api_key.clone(),
+                    )
+                }));
+                Ok(())
+            },
+        )
+        .expect("migrate settings");
+
+        assert_eq!(
+            saved_credentials,
+            vec![("provider-openai".to_string(), "test-key".to_string())]
+        );
+        assert_eq!(migrated.providers[0].credential_ref, "provider-openai");
+        assert!(!serde_json::to_string(&migrated)
+            .expect("serialize migrated settings")
+            .contains("test-key"));
     }
 
     #[test]
@@ -895,7 +1234,7 @@ mod tests {
 
     #[test]
     fn legacy_provider_settings_are_discarded_without_losing_sessions() {
-        let connection = Connection::open_in_memory().expect("database");
+        let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
                 "CREATE TABLE settings (
@@ -924,7 +1263,7 @@ mod tests {
                  );",
             )
             .expect("legacy schema");
-        initialize_connection(&connection).expect("migrate");
+        initialize_connection(&mut connection).expect("migrate");
 
         let loaded_settings = load_settings_inner(&connection)
             .expect("load settings")
@@ -932,6 +1271,9 @@ mod tests {
         assert_eq!(loaded_settings.locale, "en");
         assert_eq!(loaded_settings.default_provider_id, None);
         assert!(loaded_settings.providers.is_empty());
+        assert!(!table_columns(&connection, "settings")
+            .expect("settings columns")
+            .contains("api_key"));
         let sessions = list_sessions_inner(&connection).expect("sessions");
         assert_eq!(sessions[0].id, "legacy");
         assert_eq!(sessions[0].provider_id, "");

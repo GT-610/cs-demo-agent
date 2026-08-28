@@ -22,7 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderKind } from "../agent/types";
 import {
   createProviderProfile,
@@ -298,20 +298,7 @@ function ProviderCard({
           onChange={(event) => onChange((current) => ({ ...current, apiKey: event.target.value }))}
         />
         <ModelListField profile={profile} onChange={onChange} t={t} />
-        <TextField
-          fullWidth
-          size="small"
-          type="number"
-          label={t("provider.maxOutputTokens")}
-          value={profile.maxOutputTokens}
-          slotProps={{ htmlInput: { min: 256, max: 131072, step: 256 } }}
-          onChange={(event) =>
-            onChange((current) => ({
-              ...current,
-              maxOutputTokens: Number(event.target.value) || 256,
-            }))
-          }
-        />
+        <MaxOutputTokensField profile={profile} onChange={onChange} t={t} />
       </Stack>
     </Paper>
   );
@@ -327,6 +314,16 @@ function ModelListField({
   t: Translator;
 }) {
   const [value, setValue] = useState(() => formatModelList(profile.models));
+  const pendingModelsRef = useRef<string[] | null>(null);
+  const formattedModels = formatModelList(profile.models);
+  useEffect(() => {
+    const pendingModels = pendingModelsRef.current;
+    if (pendingModels && modelListsEqual(pendingModels, profile.models)) {
+      pendingModelsRef.current = null;
+      return;
+    }
+    setValue(formattedModels);
+  }, [formattedModels, profile.models]);
   return (
     <TextField
       fullWidth
@@ -338,11 +335,63 @@ function ModelListField({
       label={t("provider.models")}
       helperText={t("provider.modelsHint")}
       value={value}
+      onBlur={() => {
+        pendingModelsRef.current = null;
+        setValue(formatModelList(parseModelList(value)));
+      }}
       onChange={(event) => {
         const next = event.target.value;
+        const models = parseModelList(next);
         setValue(next);
-        onChange((current) => ({ ...current, models: parseModelList(next) }));
+        pendingModelsRef.current = models;
+        onChange((current) => ({ ...current, models }));
       }}
     />
   );
+}
+
+function MaxOutputTokensField({
+  profile,
+  onChange,
+  t,
+}: {
+  profile: StoredProviderProfile;
+  onChange: (update: (profile: StoredProviderProfile) => StoredProviderProfile) => void;
+  t: Translator;
+}) {
+  const normalizedValue = String(profile.maxOutputTokens);
+  const [value, setValue] = useState(normalizedValue);
+  const previousValueRef = useRef(profile.maxOutputTokens);
+  useEffect(() => {
+    if (previousValueRef.current !== profile.maxOutputTokens) {
+      previousValueRef.current = profile.maxOutputTokens;
+      setValue(normalizedValue);
+    }
+  }, [normalizedValue, profile.maxOutputTokens]);
+
+  const commit = () => {
+    const parsed = Number(value);
+    const next = Number.isFinite(parsed)
+      ? Math.min(131_072, Math.max(256, Math.trunc(parsed)))
+      : 256;
+    setValue(String(next));
+    onChange((current) => ({ ...current, maxOutputTokens: next }));
+  };
+
+  return (
+    <TextField
+      fullWidth
+      size="small"
+      type="number"
+      label={t("provider.maxOutputTokens")}
+      value={value}
+      slotProps={{ htmlInput: { min: 256, max: 131072, step: 256 } }}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={commit}
+    />
+  );
+}
+
+function modelListsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((model, index) => model === right[index]);
 }
