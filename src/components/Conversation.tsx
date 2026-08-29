@@ -101,7 +101,7 @@ export function Conversation({
     <Box
       component="main"
       aria-label={t("chat.ariaLabel")}
-      sx={{ display: "grid", minWidth: 0, minHeight: 0, gridTemplateRows: "minmax(0, 1fr) auto" }}
+      sx={{ display: "grid", width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
       <Box
         ref={scrollRef}
@@ -361,7 +361,7 @@ function EmptyConversation({
   const title = !hasDemo ? t("empty.loadTitle") : !providerReady ? t("empty.providerTitle") : t("empty.readyTitle");
   const detail = !hasDemo ? t("empty.loadDetail") : !providerReady ? t("empty.providerDetail") : t("empty.readyDetail");
   return (
-    <Stack sx={{ minHeight: "calc(100vh - 245px)", textAlign: "center", alignItems: "center", justifyContent: "center" }}>
+    <Stack sx={{ minHeight: "100%", textAlign: "center", alignItems: "center", justifyContent: "center" }}>
       <Box className="radar-graphic" aria-hidden="true"><span /><span /><MyLocationOutlinedIcon /></Box>
       <Typography variant="overline">{t("empty.kicker")}</Typography>
       <Typography component="h2" sx={{ mt: 1, color: "#dfe3df", fontSize: "1.08rem", fontWeight: 650 }}>

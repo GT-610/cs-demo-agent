@@ -109,7 +109,7 @@ export function App() {
         </Box>
       ) : (
         <>
-          <Box sx={{ gridColumn: { xs: 1, md: 2 }, gridRow: 2, minWidth: 0, minHeight: 0 }}>
+          <Box sx={{ gridColumn: { xs: 1, md: 2 }, gridRow: 2, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
             <Conversation
               entries={workspace.conversation.entries}
               draft={workspace.draft}
