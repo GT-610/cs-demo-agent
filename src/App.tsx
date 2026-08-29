@@ -2,6 +2,7 @@ import { Box, Drawer } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import { fileName } from "./app/display";
 import { useWorkspace } from "./app/useWorkspace";
+import { AboutPage } from "./components/AboutPage";
 import { Conversation } from "./components/Conversation";
 import { DemoSidebar } from "./components/DemoSidebar";
 import { SettingsPage } from "./components/SettingsPage";
@@ -29,6 +30,8 @@ export function App() {
   const headerTitle =
     workspace.page === "settings"
       ? t("settings.title")
+      : workspace.page === "about"
+        ? t("about.title")
       : activeSummary?.title ??
         (workspace.conversation.demoPath
           ? fileName(workspace.conversation.demoPath)
@@ -38,10 +41,12 @@ export function App() {
       sessions={workspace.sessions}
       activeSessionId={workspace.activeSessionId}
       settingsActive={workspace.page === "settings"}
+      aboutActive={workspace.page === "about"}
       runningSessionIds={workspace.runningSessionIds}
       onNewSession={workspace.startNewSession}
       onOpenSession={workspace.openSession}
       onOpenSettings={workspace.openSettings}
+      onOpenAbout={workspace.openAbout}
       onRenameSession={workspace.renameSession}
       onDeleteSession={workspace.deleteSession}
       onNavigate={() => setNavigationOpen(false)}
@@ -106,6 +111,18 @@ export function App() {
             dismissSaveError={workspace.dismissSettingsSaveError}
             t={t}
           />
+        </Box>
+      ) : workspace.page === "about" ? (
+        <Box
+          sx={{
+            gridColumn: { xs: 1, md: "2 / -1" },
+            gridRow: 2,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
+          <AboutPage t={t} />
         </Box>
       ) : (
         <>

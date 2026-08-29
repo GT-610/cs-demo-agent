@@ -290,6 +290,13 @@ export function useWorkspace(initialLocale: Locale) {
     replacePage("settings");
   }, [cancelDemoLoad, replacePage]);
 
+  const openAbout = useCallback(() => {
+    navigationRef.current += 1;
+    cancelDemoLoad();
+    setSessionLoading(false);
+    replacePage("about");
+  }, [cancelDemoLoad, replacePage]);
+
   const openSession = useCallback(
     async (id: string) => {
       if (deletingSessionIdsRef.current.has(id)) return;
@@ -817,6 +824,7 @@ export function useWorkspace(initialLocale: Locale) {
     setError: setActiveError,
     startNewSession,
     openSettings,
+    openAbout,
     openSession,
     chooseDemo,
     selectModel,

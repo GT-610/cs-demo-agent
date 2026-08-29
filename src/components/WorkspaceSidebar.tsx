@@ -2,6 +2,7 @@ import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import {
   Box,
@@ -17,6 +18,7 @@ import {
   ListItemButton,
   Menu,
   MenuItem,
+  Stack,
   TextField,
   Tooltip,
   Typography,
@@ -36,10 +38,12 @@ export function WorkspaceSidebar({
   sessions,
   activeSessionId,
   settingsActive,
+  aboutActive,
   runningSessionIds,
   onNewSession,
   onOpenSession,
   onOpenSettings,
+  onOpenAbout,
   onRenameSession,
   onDeleteSession,
   onNavigate,
@@ -48,10 +52,12 @@ export function WorkspaceSidebar({
   sessions: SessionSummary[];
   activeSessionId: string | null;
   settingsActive: boolean;
+  aboutActive: boolean;
   runningSessionIds: ReadonlySet<string>;
   onNewSession: () => void;
   onOpenSession: (id: string) => Promise<void>;
   onOpenSettings: () => void;
+  onOpenAbout: () => void;
   onRenameSession: (id: string, title: string) => Promise<void>;
   onDeleteSession: (id: string) => Promise<void>;
   onNavigate?: () => void;
@@ -235,23 +241,42 @@ export function WorkspaceSidebar({
       </List>
 
       <Box sx={{ p: 1.15, borderTop: 1, borderColor: "divider" }}>
-        <Button
-          fullWidth
-          variant="text"
-          startIcon={<SettingsOutlinedIcon />}
-          onClick={() => {
-            onOpenSettings();
-            onNavigate?.();
-          }}
-          sx={{
-            justifyContent: "flex-start",
-            px: 1.1,
-            color: settingsActive ? "primary.main" : "#aeb5ae",
-            backgroundColor: settingsActive ? "rgba(183,243,75,0.065)" : "transparent",
-          }}
-        >
-          {t("settings.title")}
-        </Button>
+        <Stack spacing={0.3}>
+          <Button
+            fullWidth
+            variant="text"
+            startIcon={<SettingsOutlinedIcon />}
+            onClick={() => {
+              onOpenSettings();
+              onNavigate?.();
+            }}
+            sx={{
+              justifyContent: "flex-start",
+              px: 1.1,
+              color: settingsActive ? "primary.main" : "#aeb5ae",
+              backgroundColor: settingsActive ? "rgba(183,243,75,0.065)" : "transparent",
+            }}
+          >
+            {t("settings.title")}
+          </Button>
+          <Button
+            fullWidth
+            variant="text"
+            startIcon={<InfoOutlinedIcon />}
+            onClick={() => {
+              onOpenAbout();
+              onNavigate?.();
+            }}
+            sx={{
+              justifyContent: "flex-start",
+              px: 1.1,
+              color: aboutActive ? "primary.main" : "#aeb5ae",
+              backgroundColor: aboutActive ? "rgba(183,243,75,0.065)" : "transparent",
+            }}
+          >
+            {t("about.title")}
+          </Button>
+        </Stack>
       </Box>
 
       <Menu anchorEl={actions?.anchor} open={!!actions} onClose={closeActions}>

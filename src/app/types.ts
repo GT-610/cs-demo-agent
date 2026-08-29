@@ -52,7 +52,7 @@ export interface StatusMessage {
   toolName?: string;
 }
 
-export type WorkspacePage = "conversation" | "settings";
+export type WorkspacePage = "conversation" | "settings" | "about";
 
 export interface ModelOption {
   providerId: string;
