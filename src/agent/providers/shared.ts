@@ -1,9 +1,4 @@
-import type {
-  HttpJsonResponse,
-  JsonObject,
-  JsonValue,
-  ProviderConfig,
-} from "../types";
+import type { JsonObject, JsonValue, ProviderConfig } from "../types";
 
 export function buildEndpoint(baseUrl: string, route: string): string {
   const trimmed = baseUrl.trim();
@@ -56,22 +51,6 @@ export function asArray(value: JsonValue | undefined): JsonValue[] {
 
 export function asString(value: JsonValue | undefined): string {
   return typeof value === "string" ? value : "";
-}
-
-export function assertSuccess(response: HttpJsonResponse): JsonObject {
-  const body = asObject(response.body, "Provider response");
-  if (response.status >= 200 && response.status < 300) {
-    return body;
-  }
-
-  const error = body.error;
-  if (error && !Array.isArray(error) && typeof error === "object") {
-    const message = error.message;
-    if (typeof message === "string" && message) {
-      throw new Error(`Provider request failed (${response.status}): ${message}`);
-    }
-  }
-  throw new Error(`Provider request failed with HTTP ${response.status}`);
 }
 
 export function extractTextContent(value: JsonValue | undefined): string {

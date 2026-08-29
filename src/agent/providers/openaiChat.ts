@@ -1,6 +1,6 @@
 import type {
   AgentMessage,
-  HttpTransport,
+  HttpStreamTransport,
   JsonObject,
   JsonValue,
   ProviderAdapter,
@@ -13,7 +13,6 @@ import {
   asArray,
   asObject,
   asString,
-  assertSuccess,
   authHeaders,
   buildEndpoint,
   extractTextContent,
@@ -69,32 +68,104 @@ function parseToolCalls(value: JsonValue | undefined): ToolCall[] {
 }
 
 export class OpenAiChatAdapter implements ProviderAdapter {
-  constructor(private readonly transport: HttpTransport) {}
+  constructor(private readonly transport: HttpStreamTransport) {}
 
-  async generate(request: ProviderRequest): Promise<ProviderTurn> {
+  async generate(
+    request: ProviderRequest,
+    onTextDelta: (delta: string) => void = () => undefined,
+  ): Promise<ProviderTurn> {
     validateProviderConfig(request.config);
-    const response = await this.transport({
-      url: buildEndpoint(request.config.baseUrl, "/chat/completions"),
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(request.config),
+    let text = "";
+    let streamedText = false;
+    let finalTurn: ProviderTurn | undefined;
+    const toolCalls = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
+
+    await this.transport(
+      {
+        url: buildEndpoint(request.config.baseUrl, "/chat/completions"),
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(request.config),
+        },
+        timeoutMs: 120_000,
+        body: {
+          model: request.config.model,
+          messages: request.messages.map(toOpenAiMessage),
+          tools: request.tools.map(toOpenAiTool),
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          stream: true,
+        },
       },
-      timeoutMs: 120_000,
-      body: {
-        model: request.config.model,
-        messages: request.messages.map(toOpenAiMessage),
-        tools: request.tools.map(toOpenAiTool),
-        tool_choice: "auto",
-        parallel_tool_calls: true,
+      (value) => {
+        const body = asObject(value, "OpenAI stream event");
+        throwStreamError(body);
+        const choiceValue = asArray(body.choices)[0];
+        if (!choiceValue) return;
+        const choice = asObject(choiceValue, "choices[0]");
+        if (choice.message) {
+          const message = asObject(choice.message, "choices[0].message");
+          finalTurn = {
+            text: extractTextContent(message.content),
+            toolCalls: parseToolCalls(message.tool_calls),
+          };
+          return;
+        }
+        if (!choice.delta) return;
+        const delta = asObject(choice.delta, "choices[0].delta");
+        const content = extractTextContent(delta.content);
+        if (content) {
+          streamedText = true;
+          text += content;
+          onTextDelta(content);
+        }
+        for (const [fallbackIndex, itemValue] of asArray(
+          delta.tool_calls,
+        ).entries()) {
+          const item = asObject(itemValue, "delta.tool_calls[]");
+          const index =
+            typeof item.index === "number" ? item.index : fallbackIndex;
+          const current = toolCalls.get(index) ?? {
+            id: "",
+            name: "",
+            arguments: "",
+          };
+          const fn = item.function
+            ? asObject(item.function, "delta.tool_calls[].function")
+            : undefined;
+          current.id = asString(item.id) || current.id;
+          current.name = asString(fn?.name) || current.name;
+          current.arguments += asString(fn?.arguments);
+          toolCalls.set(index, current);
+        }
       },
-    });
-    const body = assertSuccess(response);
-    const choice = asObject(asArray(body.choices)[0] ?? null, "choices[0]");
-    const message = asObject(choice.message ?? null, "choices[0].message");
+    );
+
+    if (finalTurn) {
+      if (!streamedText && finalTurn.text) onTextDelta(finalTurn.text);
+      return finalTurn;
+    }
 
     return {
-      text: extractTextContent(message.content),
-      toolCalls: parseToolCalls(message.tool_calls),
+      text,
+      toolCalls: [...toolCalls.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([index, call]) => ({
+          id: call.id || `tool-call-${index}`,
+          name: call.name,
+          arguments: call.arguments || "{}",
+        })),
     };
   }
+}
+
+function throwStreamError(body: JsonObject): void {
+  if (!body.error || Array.isArray(body.error) || typeof body.error !== "object") {
+    return;
+  }
+  const message = asString(body.error.message);
+  throw new Error(message ? `Provider stream failed: ${message}` : "Provider stream failed");
 }

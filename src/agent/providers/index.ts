@@ -1,5 +1,5 @@
 import type {
-  HttpTransport,
+  HttpStreamTransport,
   ProviderAdapter,
   ProviderKind,
 } from "../types";
@@ -9,7 +9,7 @@ import { OpenAiResponsesAdapter } from "./openaiResponses";
 
 export function createProviderAdapter(
   kind: ProviderKind,
-  transport: HttpTransport,
+  transport: HttpStreamTransport,
 ): ProviderAdapter {
   switch (kind) {
     case "openai-chat":

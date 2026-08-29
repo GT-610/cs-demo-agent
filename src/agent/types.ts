@@ -62,6 +62,7 @@ export type ProviderKind =
   | "anthropic";
 
 export interface ProviderConfig {
+  providerId: string;
   kind: ProviderKind;
   baseUrl: string;
   apiKey: string;
@@ -84,6 +85,14 @@ export interface ResponsesContinuation {
 
 export type ProviderContinuation = ResponsesContinuation;
 
+export interface StoredProviderContinuation {
+  providerId: string;
+  providerKind: ProviderKind;
+  baseUrl: string;
+  model: string;
+  value: ProviderContinuation;
+}
+
 export interface ProviderTurn {
   text: string;
   toolCalls: ToolCall[];
@@ -97,17 +106,25 @@ export interface HttpJsonRequest {
   timeoutMs: number;
 }
 
-export interface HttpJsonResponse {
+export type HttpStreamEvent =
+  | { type: "started"; status: number }
+  | { type: "data"; data: JsonValue }
+  | { type: "done" };
+
+export interface HttpStreamResponse {
   status: number;
-  body: JsonValue;
 }
 
-export type HttpTransport = (
+export type HttpStreamTransport = (
   request: HttpJsonRequest,
-) => Promise<HttpJsonResponse>;
+  onData: (data: JsonValue) => void,
+) => Promise<HttpStreamResponse>;
 
 export interface ProviderAdapter {
-  generate(request: ProviderRequest): Promise<ProviderTurn>;
+  generate(
+    request: ProviderRequest,
+    onTextDelta?: (delta: string) => void,
+  ): Promise<ProviderTurn>;
 }
 
 export type ToolExecutor = (
@@ -117,6 +134,13 @@ export type ToolExecutor = (
 
 export type AgentEvent =
   | { type: "assistant-start"; iteration: number }
+  | { type: "assistant-delta"; delta: string; iteration: number }
+  | {
+      type: "assistant-end";
+      text: string;
+      iteration: number;
+      hasToolCalls: boolean;
+    }
   | { type: "tool-start"; call: ToolCall; iteration: number }
   | {
       type: "tool-result";
@@ -128,3 +152,8 @@ export type AgentEvent =
   | { type: "error"; message: string };
 
 export type AgentEventHandler = (event: AgentEvent) => void;
+
+export interface AgentRuntimeState {
+  messages: AgentMessage[];
+  continuation?: StoredProviderContinuation;
+}

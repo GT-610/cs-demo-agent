@@ -1,10 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
-  HttpJsonRequest,
-  HttpJsonResponse,
-  HttpTransport,
+  HttpStreamEvent,
+  HttpStreamTransport,
   JsonObject,
   JsonValue,
   ToolExecutor,
@@ -43,11 +42,62 @@ const REQUEST_TOOLS = new Set([
   "query_grenades",
 ]);
 
-export function createHttpTransport(
+interface StreamChannel {
+  onmessage: (event: HttpStreamEvent) => void;
+}
+
+export function createHttpStreamTransport(
   invokeCommand: InvokeFunction = invoke,
-): HttpTransport {
-  return (request: HttpJsonRequest) =>
-    invokeCommand<HttpJsonResponse>("send_http_json", { request });
+  createChannel: () => StreamChannel = () => new Channel<HttpStreamEvent>(),
+): HttpStreamTransport {
+  return async (request, onData) => {
+    let status = 0;
+    let done = false;
+    let handlerError: unknown;
+    let resolveDone: (() => void) | undefined;
+    const doneEvent = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    const onEvent = createChannel();
+    onEvent.onmessage = (event) => {
+      try {
+        if (event.type === "started") status = event.status;
+        if (event.type === "data") onData(event.data);
+        if (event.type === "done") {
+          done = true;
+          resolveDone?.();
+        }
+      } catch (error) {
+        handlerError ??= error;
+      }
+    };
+    await invokeCommand<void>("stream_http_json", { request, onEvent });
+    if (!done) await waitForStreamCompletion(doneEvent, () => status);
+    if (handlerError) throw handlerError;
+    if (!done || status < 200 || status >= 300) {
+      throw new Error(
+        `Provider stream ended without a successful completion (status ${status})`,
+      );
+    }
+    return { status };
+  };
+}
+
+async function waitForStreamCompletion(
+  doneEvent: Promise<void>,
+  getStatus: () => number,
+): Promise<void> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Provider stream completion event timed out (status ${getStatus()})`));
+    }, 5_000);
+  });
+  try {
+    await Promise.race([doneEvent, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
 }
 
 export function createDemoToolExecutor(

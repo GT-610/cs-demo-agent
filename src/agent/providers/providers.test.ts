@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type {
   AgentMessage,
   HttpJsonRequest,
-  HttpJsonResponse,
-  HttpTransport,
+  HttpStreamTransport,
   JsonObject,
   JsonSchema,
   JsonValue,
@@ -15,6 +14,7 @@ import { OpenAiChatAdapter } from "./openaiChat";
 import { OpenAiResponsesAdapter } from "./openaiResponses";
 
 const openAiConfig: ProviderConfig = {
+  providerId: "provider-openai",
   kind: "openai-chat",
   baseUrl: "https://api.example.test/v1",
   apiKey: "secret",
@@ -26,17 +26,16 @@ const initialMessages: AgentMessage[] = [
   { role: "user", content: "What map is this?" },
 ];
 
-function queuedTransport(
-  responses: HttpJsonResponse[],
+function queuedStreamTransport(
+  eventQueues: JsonValue[][],
   requests: HttpJsonRequest[],
-): HttpTransport {
-  return async (request) => {
+): HttpStreamTransport {
+  return async (request, onData) => {
     requests.push(request);
-    const response = responses.shift();
-    if (!response) {
-      throw new Error("No queued provider response");
-    }
-    return response;
+    const events = eventQueues.shift();
+    if (!events) throw new Error("No queued provider stream");
+    events.forEach(onData);
+    return { status: 200 };
   };
 }
 
@@ -49,9 +48,7 @@ function validateStrictObjectSchemas(schema: JsonSchema): void {
   }
   Object.values(schema.properties ?? {}).forEach(validateStrictObjectSchemas);
   schema.anyOf?.forEach(validateStrictObjectSchemas);
-  if (schema.items) {
-    validateStrictObjectSchemas(schema.items);
-  }
+  if (schema.items) validateStrictObjectSchemas(schema.items);
 }
 
 test("all demo tool schemas satisfy OpenAI strict mode object rules", () => {
@@ -59,24 +56,25 @@ test("all demo tool schemas satisfy OpenAI strict mode object rules", () => {
 });
 
 describe("OpenAiChatAdapter", () => {
-  test("serializes strict tools and parses function calls", async () => {
+  test("streams text and assembles fragmented function calls", async () => {
     const requests: HttpJsonRequest[] = [];
     const adapter = new OpenAiChatAdapter(
-      queuedTransport(
+      queuedStreamTransport(
         [
-          {
-            status: 200,
-            body: {
+          [
+            { choices: [{ delta: { content: "Checking " } }] },
+            { choices: [{ delta: { content: "the demo." } }] },
+            {
               choices: [
                 {
-                  message: {
-                    content: null,
+                  delta: {
                     tool_calls: [
                       {
+                        index: 0,
                         id: "call-header",
                         function: {
                           name: "get_demo_header",
-                          arguments: "{}",
+                          arguments: "{",
                         },
                       },
                     ],
@@ -84,18 +82,34 @@ describe("OpenAiChatAdapter", () => {
                 },
               ],
             },
-          },
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      { index: 0, function: { arguments: "}" } },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
         ],
         requests,
       ),
     );
+    const deltas: string[] = [];
+    const turn = await adapter.generate(
+      {
+        config: openAiConfig,
+        messages: initialMessages,
+        tools: DEMO_TOOL_SPECS,
+      },
+      (delta) => deltas.push(delta),
+    );
 
-    const turn = await adapter.generate({
-      config: openAiConfig,
-      messages: initialMessages,
-      tools: DEMO_TOOL_SPECS,
-    });
-
+    expect(deltas).toEqual(["Checking ", "the demo."]);
+    expect(turn.text).toBe("Checking the demo.");
     expect(turn.toolCalls).toEqual([
       { id: "call-header", name: "get_demo_header", arguments: "{}" },
     ]);
@@ -104,6 +118,7 @@ describe("OpenAiChatAdapter", () => {
     );
     expect(requests[0]?.headers.Authorization).toBe("Bearer secret");
     const body = requests[0]?.body as JsonObject;
+    expect(body.stream).toBe(true);
     const tools = body.tools as JsonObject[];
     const firstFunction = tools[0]?.function as JsonObject;
     expect(firstFunction.strict).toBe(true);
@@ -111,55 +126,37 @@ describe("OpenAiChatAdapter", () => {
 });
 
 describe("OpenAiResponsesAdapter", () => {
-  test("replays complete output items without server-side response state", async () => {
+  test("streams text and replays complete output without server state", async () => {
     const requests: HttpJsonRequest[] = [];
+    const firstOutput: JsonValue[] = [
+      {
+        type: "reasoning",
+        id: "reasoning-1",
+        encrypted_content: "encrypted-reasoning",
+      },
+      {
+        type: "function_call",
+        call_id: "call-1",
+        name: "get_demo_header",
+        arguments: "{}",
+      },
+    ];
+    const secondOutput: JsonValue[] = [
+      {
+        type: "message",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Map: de_nuke" }],
+      },
+    ];
     const adapter = new OpenAiResponsesAdapter(
-      queuedTransport(
+      queuedStreamTransport(
         [
-          {
-            status: 200,
-            body: {
-              output: [
-                {
-                  type: "reasoning",
-                  id: "reasoning-1",
-                  encrypted_content: "encrypted-reasoning",
-                },
-                {
-                  type: "function_call",
-                  call_id: "call-1",
-                  name: "get_demo_header",
-                  arguments: "{}",
-                },
-              ],
-            },
-          },
-          {
-            status: 200,
-            body: {
-              output: [
-                {
-                  type: "function_call",
-                  call_id: "call-2",
-                  name: "get_player_info",
-                  arguments: "{}",
-                  phase: "commentary",
-                },
-              ],
-            },
-          },
-          {
-            status: 200,
-            body: {
-              output: [
-                {
-                  type: "message",
-                  phase: "final_answer",
-                  content: [{ type: "output_text", text: "Map: de_nuke" }],
-                },
-              ],
-            },
-          },
+          [{ type: "response.completed", response: { output: firstOutput } }],
+          [
+            { type: "response.output_text.delta", delta: "Map: " },
+            { type: "response.output_text.delta", delta: "de_nuke" },
+            { type: "response.completed", response: { output: secondOutput } },
+          ],
         ],
         requests,
       ),
@@ -172,11 +169,7 @@ describe("OpenAiResponsesAdapter", () => {
     });
     const continuedMessages: AgentMessage[] = [
       ...initialMessages,
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: first.toolCalls,
-      },
+      { role: "assistant", content: "", toolCalls: first.toolCalls },
       {
         role: "tool",
         toolCallId: "call-1",
@@ -184,114 +177,133 @@ describe("OpenAiResponsesAdapter", () => {
         content: '{"data":{"map_name":"de_nuke"}}',
       },
     ];
-
-    const second = await adapter.generate({
-      config,
-      messages: continuedMessages,
-      tools: DEMO_TOOL_SPECS,
-      continuation: first.continuation,
-    });
-    const finalMessages: AgentMessage[] = [
-      ...continuedMessages,
+    const deltas: string[] = [];
+    const second = await adapter.generate(
       {
-        role: "assistant",
-        content: "",
-        toolCalls: second.toolCalls,
+        config,
+        messages: continuedMessages,
+        tools: DEMO_TOOL_SPECS,
+        continuation: first.continuation,
       },
-      {
-        role: "tool",
-        toolCallId: "call-2",
-        name: "get_player_info",
-        content: '{"data":[{"name":"Player"}]}',
-      },
-    ];
-    const third = await adapter.generate({
-      config,
-      messages: finalMessages,
-      tools: DEMO_TOOL_SPECS,
-      continuation: second.continuation,
-    });
+      (delta) => deltas.push(delta),
+    );
 
-    expect(third.text).toBe("Map: de_nuke");
+    expect(deltas).toEqual(["Map: ", "de_nuke"]);
+    expect(second.text).toBe("Map: de_nuke");
     const firstBody = requests[0]?.body as JsonObject;
     expect(firstBody.store).toBe(false);
+    expect(firstBody.stream).toBe(true);
     expect(firstBody.previous_response_id).toBeUndefined();
     const secondBody = requests[1]?.body as JsonObject;
     expect(secondBody.input).toEqual([
       { role: "user", content: "What map is this?" },
-      {
-        type: "reasoning",
-        id: "reasoning-1",
-        encrypted_content: "encrypted-reasoning",
-      },
-      {
-        type: "function_call",
-        call_id: "call-1",
-        name: "get_demo_header",
-        arguments: "{}",
-      },
+      ...firstOutput,
       {
         type: "function_call_output",
         call_id: "call-1",
         output: '{"data":{"map_name":"de_nuke"}}',
       },
     ]);
-    const thirdBody = requests[2]?.body as JsonObject;
-    expect(thirdBody.input).toEqual([
-      ...(secondBody.input as JsonValue[]),
+  });
+
+  test("reconstructs function calls when persisted history has no continuation", async () => {
+    const requests: HttpJsonRequest[] = [];
+    const adapter = new OpenAiResponsesAdapter(
+      queuedStreamTransport(
+        [[{ type: "response.completed", response: { output: [] } }]],
+        requests,
+      ),
+    );
+    await adapter.generate({
+      config: { ...openAiConfig, kind: "openai-responses" },
+      messages: [
+        ...initialMessages,
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call-1", name: "get_demo_header", arguments: "{}" },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call-1",
+          name: "get_demo_header",
+          content: "{}",
+        },
+      ],
+      tools: DEMO_TOOL_SPECS,
+    });
+
+    expect((requests[0]?.body as JsonObject).input).toEqual([
+      { role: "user", content: "What map is this?" },
       {
         type: "function_call",
-        call_id: "call-2",
-        name: "get_player_info",
+        call_id: "call-1",
+        name: "get_demo_header",
         arguments: "{}",
-        phase: "commentary",
       },
-      {
-        type: "function_call_output",
-        call_id: "call-2",
-        output: '{"data":[{"name":"Player"}]}',
-      },
+      { type: "function_call_output", call_id: "call-1", output: "{}" },
     ]);
   });
 });
 
 describe("AnthropicAdapter", () => {
-  test("maps tool use and grouped tool results", async () => {
+  test("streams text and fragmented tool JSON", async () => {
     const requests: HttpJsonRequest[] = [];
     const adapter = new AnthropicAdapter(
-      queuedTransport(
+      queuedStreamTransport(
         [
-          {
-            status: 200,
-            body: {
-              content: [
-                { type: "text", text: "Checking the demo." },
-                {
-                  type: "tool_use",
-                  id: "toolu-1",
-                  name: "get_player_info",
-                  input: {},
-                },
-              ],
+          [
+            {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "text", text: "" },
             },
-          },
+            {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: "Checking the demo." },
+            },
+            {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "tool_use",
+                id: "toolu-1",
+                name: "get_player_info",
+                input: {},
+              },
+            },
+            {
+              type: "content_block_delta",
+              index: 1,
+              delta: { type: "input_json_delta", partial_json: "{" },
+            },
+            {
+              type: "content_block_delta",
+              index: 1,
+              delta: { type: "input_json_delta", partial_json: "}" },
+            },
+          ],
         ],
         requests,
       ),
     );
     const config: ProviderConfig = {
+      providerId: "provider-anthropic",
       kind: "anthropic",
       baseUrl: "https://anthropic.example.test",
       apiKey: "anthropic-secret",
       model: "claude-test",
     };
+    const deltas: string[] = [];
+    const turn = await adapter.generate(
+      { config, messages: initialMessages, tools: DEMO_TOOL_SPECS },
+      (delta) => deltas.push(delta),
+    );
 
-    const turn = await adapter.generate({
-      config,
-      messages: initialMessages,
-      tools: DEMO_TOOL_SPECS,
-    });
-
+    expect(deltas).toEqual(["Checking the demo."]);
     expect(turn.text).toBe("Checking the demo.");
     expect(turn.toolCalls[0]).toEqual({
       id: "toolu-1",
@@ -302,5 +314,6 @@ describe("AnthropicAdapter", () => {
       "https://anthropic.example.test/v1/messages",
     );
     expect(requests[0]?.headers["x-api-key"]).toBe("anthropic-secret");
+    expect((requests[0]?.body as JsonObject).stream).toBe(true);
   });
 });

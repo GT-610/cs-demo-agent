@@ -1,0 +1,219 @@
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
+import {
+  Box,
+  ButtonBase,
+  Chip,
+  CircularProgress,
+  Divider,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import { alpha } from "@mui/material/styles";
+import type { JsonObject } from "../agent/types";
+import {
+  asObject,
+  asObjectArray,
+  fileName,
+  readNumber,
+  readString,
+} from "../app/display";
+import type { ConversationState } from "../app/types";
+import type { Translator } from "../i18n";
+
+export function DemoSidebar({
+  conversation,
+  demoLoading,
+  sessionBound,
+  sending,
+  onChooseDemo,
+  t,
+}: {
+  conversation: ConversationState;
+  demoLoading: boolean;
+  sessionBound: boolean;
+  sending: boolean;
+  onChooseDemo: () => Promise<void>;
+  t: Translator;
+}) {
+  const header = asObject(conversation.header?.data);
+  const roster = asObjectArray(conversation.players?.data);
+  const canChoose = !sessionBound && !demoLoading && !sending;
+
+  return (
+    <Box
+      component="aside"
+      aria-label={t("demo.sidebar")}
+      sx={{
+        width: "100%",
+        height: "100%",
+        minHeight: 0,
+        overflow: "auto",
+        borderLeft: 1,
+        borderColor: "divider",
+        backgroundColor: "#101210",
+      }}
+    >
+      <SidebarSection title={t("demo.section")}>
+        <ButtonBase
+          component="button"
+          type="button"
+          disabled={!canChoose}
+          onClick={() => void onChooseDemo()}
+          sx={(theme) => ({
+            display: "flex",
+            width: "100%",
+            minHeight: 94,
+            flexDirection: "column",
+            gap: 0.45,
+            px: 1.5,
+            py: 1.4,
+            overflow: "hidden",
+            border: `1px ${conversation.demoPath ? "solid" : "dashed"} ${alpha(theme.palette.primary.main, 0.22)}`,
+            borderRadius: 1.4,
+            color: "text.secondary",
+            backgroundColor: alpha(theme.palette.primary.main, 0.025),
+            "&:hover": { borderColor: alpha(theme.palette.primary.main, 0.55) },
+            "&.Mui-disabled": { opacity: 0.82 },
+          })}
+        >
+          {demoLoading ? (
+            <CircularProgress size={22} />
+          ) : conversation.demoPath ? (
+            <InsertDriveFileOutlinedIcon color="primary" sx={{ fontSize: 23 }} />
+          ) : (
+            <UploadFileOutlinedIcon color="primary" sx={{ fontSize: 24 }} />
+          )}
+          <Typography noWrap component="strong" sx={{ width: "100%", color: "#d5dad5", fontSize: "0.72rem" }}>
+            {demoLoading
+              ? t("demo.parsing")
+              : conversation.demoPath
+                ? fileName(conversation.demoPath)
+                : t("demo.drop")}
+          </Typography>
+          <Typography variant="caption" sx={{ color: "#687068" }}>
+            {sessionBound
+              ? t("demo.bound")
+              : conversation.demoPath
+                ? t("demo.change")
+                : t("demo.browse")}
+          </Typography>
+        </ButtonBase>
+        {conversation.demoPath && (
+          <Tooltip title={conversation.demoPath} placement="bottom-start">
+            <Typography noWrap sx={{ mt: 0.9, color: "#626962", font: '0.56rem "Cascadia Mono", Consolas, monospace' }}>
+              {conversation.demoPath}
+            </Typography>
+          </Tooltip>
+        )}
+        {sessionBound && (
+          <Stack direction="row" spacing={0.7} sx={{ mt: 1.2, color: "#6d756d", alignItems: "flex-start" }}>
+            <LockOutlinedIcon sx={{ mt: "1px", fontSize: 13 }} />
+            <Typography sx={{ fontSize: "0.6rem", lineHeight: 1.5 }}>
+              {t("demo.boundDetail")}
+            </Typography>
+          </Stack>
+        )}
+        {header && <DemoFacts header={header} t={t} />}
+      </SidebarSection>
+
+      <Divider />
+      <SidebarSection title={t("roster.section")} count={roster.length}>
+        {roster.length === 0 ? (
+          <Typography sx={{ color: "#687068", fontSize: "0.66rem", lineHeight: 1.55 }}>
+            {t("roster.empty")}
+          </Typography>
+        ) : (
+          <Stack spacing={0.4}>
+            {roster.map((player, index) => (
+              <PlayerRow player={player} index={index} key={playerKey(player, index)} t={t} />
+            ))}
+          </Stack>
+        )}
+      </SidebarSection>
+    </Box>
+  );
+}
+
+function SidebarSection({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box component="section" sx={{ px: 1.8, py: 2 }}>
+      <Stack direction="row" sx={{ mb: 1.35, alignItems: "center" }}>
+        <Typography component="h2" sx={{ color: "#aeb5ae", fontSize: "0.65rem", fontWeight: 720, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          {title}
+        </Typography>
+        {typeof count === "number" && (
+          <Chip label={count} sx={{ ml: "auto", height: 19, "& .MuiChip-label": { px: 0.65 } }} />
+        )}
+      </Stack>
+      {children}
+    </Box>
+  );
+}
+
+function DemoFacts({ header, t }: { header: JsonObject; t: Translator }) {
+  return (
+    <Stack spacing={0.8} sx={{ mt: 1.6 }}>
+      <Fact label={t("facts.map")} value={readString(header, "map_name", "mapName") || t("facts.unknown")} accent />
+      <Fact label={t("facts.server")} value={readString(header, "server_name", "serverName") || t("facts.notRecorded")} />
+      <Fact label={t("facts.format")} value={readString(header, "demo_version_name", "demoVersionName") || t("facts.source2")} />
+      <Fact label={t("facts.protocol")} value={readString(header, "network_protocol", "networkProtocol") || "—"} />
+    </Stack>
+  );
+}
+
+function Fact({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "baseline" }}>
+      <Typography sx={{ minWidth: 52, color: "#646b64", fontSize: "0.58rem", textTransform: "uppercase" }}>
+        {label}
+      </Typography>
+      <Typography noWrap title={value} sx={{ minWidth: 0, ml: "auto !important", color: accent ? "primary.main" : "#aeb5ae", fontSize: "0.64rem", textAlign: "right" }}>
+        {value}
+      </Typography>
+    </Stack>
+  );
+}
+
+function PlayerRow({ player, index, t }: { player: JsonObject; index: number; t: Translator }) {
+  const name = readString(player, "name", "player_name") || t("roster.player", { number: index + 1 });
+  const steamId = readString(player, "steamid", "steam_id");
+  const team = readNumber(player, "team_number", "team_num");
+  return (
+    <Stack direction="row" spacing={0.8} sx={{ minWidth: 0, minHeight: 27, alignItems: "center" }}>
+      <Chip
+        label={team === 2 ? "T" : team === 3 ? "CT" : "—"}
+        sx={(theme) => ({
+          width: 27,
+          height: 19,
+          flex: "0 0 auto",
+          color: team === 2 ? "warning.main" : team === 3 ? "secondary.main" : "text.secondary",
+          borderColor:
+            team === 2
+              ? alpha(theme.palette.warning.main, 0.3)
+              : team === 3
+                ? alpha(theme.palette.secondary.main, 0.3)
+                : undefined,
+          "& .MuiChip-label": { px: 0.25, fontWeight: 750 },
+        })}
+      />
+      <Typography noWrap title={steamId || name} sx={{ color: "#b4bbb4", fontSize: "0.65rem" }}>
+        {name}
+      </Typography>
+    </Stack>
+  );
+}
+
+function playerKey(player: JsonObject, index: number): string {
+  return `${readString(player, "steamid", "steam_id")}-${readString(player, "name", "player_name")}-${index}`;
+}

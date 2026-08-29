@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createDemoToolExecutor,
-  createHttpTransport,
+  createHttpStreamTransport,
   loadDemoOverview,
   normalizeDemoPath,
   type InvokeFunction,
@@ -66,25 +66,133 @@ describe("Tauri bridge", () => {
     expect(invoked).toBe(false);
   });
 
-  test("routes provider JSON through the Rust HTTP command", async () => {
-    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  test("routes streaming provider events through a Tauri channel", async () => {
+    const calls: string[] = [];
     const invoke: InvokeFunction = async (command, args) => {
-      calls.push({ command, args });
-      return { status: 200, body: { id: "response" } } as never;
+      calls.push(command);
+      const channel = args?.onEvent as {
+        onmessage: (event: unknown) => void;
+      };
+      channel.onmessage({ type: "started", status: 200 });
+      channel.onmessage({ type: "data", data: { delta: "hello" } });
+      channel.onmessage({ type: "done" });
+      return undefined as never;
     };
-    const transport = createHttpTransport(invoke);
-    const request = {
-      url: "https://api.example.test/v1/responses",
-      headers: { Authorization: "Bearer token" },
-      body: { model: "example" },
-      timeoutMs: 30_000,
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+    const data: unknown[] = [];
+
+    const response = await transport(
+      {
+        url: "https://api.example.test/v1/responses",
+        headers: {},
+        body: { stream: true },
+        timeoutMs: 30_000,
+      },
+      (event) => data.push(event),
+    );
+
+    expect(calls).toEqual(["stream_http_json"]);
+    expect(response.status).toBe(200);
+    expect(data).toEqual([{ delta: "hello" }]);
+  });
+
+  test("waits for trailing channel events after invoke resolves", async () => {
+    const invoke: InvokeFunction = async (_command, args) => {
+      const channel = args?.onEvent as { onmessage: (event: unknown) => void };
+      channel.onmessage({ type: "started", status: 200 });
+      setTimeout(() => {
+        channel.onmessage({ type: "data", data: { delta: "tail" } });
+        channel.onmessage({ type: "done" });
+      }, 0);
+      return undefined as never;
     };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const data: unknown[] = [];
 
-    await transport(request);
+    const response = await createHttpStreamTransport(invoke, () => channel as never)(
+      {
+        url: "https://api.example.test/v1/responses",
+        headers: {},
+        body: { stream: true },
+        timeoutMs: 30_000,
+      },
+      (event) => data.push(event),
+    );
 
-    expect(calls).toEqual([
-      { command: "send_http_json", args: { request } },
-    ]);
+    expect(response.status).toBe(200);
+    expect(data).toEqual([{ delta: "tail" }]);
+  });
+
+  test("includes the observed status when completion is unsuccessful", async () => {
+    const invoke: InvokeFunction = async (_command, args) => {
+      const channel = args?.onEvent as { onmessage: (event: unknown) => void };
+      channel.onmessage({ type: "started", status: 503 });
+      channel.onmessage({ type: "done" });
+      return undefined as never;
+    };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+
+    await expect(
+      transport(
+        {
+          url: "https://api.example.test/v1/responses",
+          headers: {},
+          body: { stream: true },
+          timeoutMs: 30_000,
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("status 503");
+  });
+
+  test("preserves handler errors after the done event", async () => {
+    const invoke: InvokeFunction = async (_command, args) => {
+      const channel = args?.onEvent as { onmessage: (event: unknown) => void };
+      channel.onmessage({ type: "started", status: 200 });
+      setTimeout(() => {
+        channel.onmessage({ type: "data", data: { delta: "tail" } });
+        channel.onmessage({ type: "done" });
+      }, 0);
+      return undefined as never;
+    };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+
+    await expect(
+      transport(
+        {
+          url: "https://api.example.test/v1/responses",
+          headers: {},
+          body: { stream: true },
+          timeoutMs: 30_000,
+        },
+        () => {
+          throw new Error("handler failed");
+        },
+      ),
+    ).rejects.toThrow("handler failed");
+  });
+
+  test("preserves provider response details from the host", async () => {
+    const invoke: InvokeFunction = async () => {
+      throw new Error("provider request error: HTTP 401: invalid API key");
+    };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+
+    await expect(
+      transport(
+        {
+          url: "https://api.example.test/v1/responses",
+          headers: {},
+          body: { stream: true },
+          timeoutMs: 30_000,
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("HTTP 401: invalid API key");
   });
 
   test("loads header and roster together", async () => {
