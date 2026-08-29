@@ -463,6 +463,8 @@ export function useWorkspace(initialLocale: Locale) {
 
   const deleteSession = useCallback(
     async (id: string) => {
+      loadRef.current += 1;
+      setSessionLoading(false);
       const workspace = sessionWorkspacesRef.current.get(id);
       if (workspace?.task) {
         workspace.task.controller.abort();

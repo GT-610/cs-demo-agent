@@ -398,6 +398,10 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
                 initial_team_by_final_side.remove(&final_side);
                 final_side_by_initial_team.remove(&existing_team);
                 ambiguous_final_sides.insert(final_side);
+                if let Some(existing_side) = final_side_by_initial_team.remove(&initial_team) {
+                    initial_team_by_final_side.remove(&existing_side);
+                    ambiguous_final_sides.insert(existing_side);
+                }
             }
         } else if let Some(existing_side) = final_side_by_initial_team.get(&initial_team).copied() {
             if existing_side != final_side {
@@ -1346,6 +1350,50 @@ mod tests {
             .find(|player| player["name"] == json!("Unknown CT"))
             .expect("unknown CT player should be present");
         assert!(unknown_t["stable_team"].is_null());
+        assert!(unknown_ct["stable_team"].is_null());
+    }
+
+    #[test]
+    fn player_info_invalidates_both_sides_after_a_forward_mapping_conflict() {
+        let events = vec![
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Alpha",
+                "user_steamid": "1",
+                "user_team_num": 3,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Bravo",
+                "user_steamid": "2",
+                "user_team_num": 2,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Charlie",
+                "user_steamid": "3",
+                "user_team_num": 2,
+            }),
+        ];
+        let fallback = vec![
+            json!({ "name": "Alpha", "steamid": "1", "team_number": 2 }),
+            json!({ "name": "Bravo", "steamid": "2", "team_number": 3 }),
+            json!({ "name": "Charlie", "steamid": "3", "team_number": 2 }),
+            json!({ "name": "Unknown CT", "steamid": "4", "team_number": 3 }),
+        ];
+
+        let players = build_initial_player_info(&events, &fallback);
+
+        let unknown_ct = players
+            .iter()
+            .find(|player| player["name"] == json!("Unknown CT"))
+            .expect("unknown CT player should be present");
         assert!(unknown_ct["stable_team"].is_null());
     }
 
