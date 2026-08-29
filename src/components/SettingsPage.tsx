@@ -86,12 +86,8 @@ export function SettingsPage({
           sx={{ mb: 3, alignItems: { xs: "stretch", sm: "flex-start" } }}
         >
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography variant="overline">{t("settings.eyebrow")}</Typography>
-            <Typography component="h2" sx={{ mt: 0.7, color: "#e2e6e2", fontSize: "1.35rem", fontWeight: 680 }}>
+            <Typography component="h2" sx={{ color: "#e2e6e2", fontSize: "1.35rem", fontWeight: 680 }}>
               {t("settings.title")}
-            </Typography>
-            <Typography sx={{ mt: 0.7, maxWidth: 640, color: "#788078", fontSize: "0.72rem", lineHeight: 1.65 }}>
-              {t("settings.intro")}
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} sx={{ flex: "0 0 auto", alignItems: "center" }}>
