@@ -287,16 +287,172 @@ fn get_player_info_sync(path: &str) -> AppResult<ToolResult> {
     let mmap = open_demo(path)?;
     let huffman = create_huffman_lookup_table();
     let mut settings = base_settings(&huffman);
+    let player_props = vec!["team_num".to_string()];
+    let other_props = vec![
+        "total_rounds_played".to_string(),
+        "is_warmup_period".to_string(),
+    ];
+    let real_player_props = real_property_names(&player_props)?;
+    let real_other_props = real_property_names(&other_props)?;
+    let mut name_map = property_name_map(&real_player_props, &player_props);
+    name_map.extend(property_name_map(&real_other_props, &other_props));
+    settings.real_name_to_og_name = name_map;
+    settings.wanted_player_props = real_player_props;
+    settings.wanted_other_props = real_other_props;
+    settings.wanted_events = vec![
+        "player_spawn".to_string(),
+        "player_first_connect".to_string(),
+    ];
+    settings.parse_ents = true;
     settings.only_header = true;
     let output = parse_demo(&mmap, settings)?;
-    let players = if output.player_md.is_empty() {
-        output.roster
+    let events = to_value_array(&output.game_events)?;
+    let fallback_players = if output.player_md.is_empty() {
+        to_value_array(&output.roster)?
     } else {
-        output.player_md
+        to_value_array(&output.player_md)?
     };
-    let rows = to_value_array(players)?;
+    let rows = build_initial_player_info(&events, &fallback_players);
     let count = rows.len();
     bounded_rows(rows, count, false)
+}
+
+#[derive(Debug)]
+struct InitialPlayerIdentity {
+    name: String,
+    steamid: Option<String>,
+    team_number: Option<i64>,
+    first_tick: i64,
+    source_priority: u8,
+}
+
+fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Vec<Value> {
+    let mut players: HashMap<String, InitialPlayerIdentity> = HashMap::new();
+
+    for event in events {
+        let event_name = event.get("event_name").and_then(Value::as_str);
+        let (name_field, steamid_field, source_priority) = match event_name {
+            Some("player_spawn") => {
+                if event.get("is_warmup_period").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                ("user_name", "user_steamid", 0)
+            }
+            Some("player_first_connect") => ("name", "steamid", 1),
+            _ => continue,
+        };
+        let Some(steamid) = value_as_string(event.get(steamid_field)) else {
+            continue;
+        };
+        if steamid == "0" {
+            continue;
+        }
+        let team_number = event
+            .get("user_team_num")
+            .and_then(number_as_i64)
+            .filter(|team| matches!(team, 2 | 3));
+        let Some(team_number) = team_number else {
+            continue;
+        };
+        let candidate = InitialPlayerIdentity {
+            name: event
+                .get(name_field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            steamid: Some(steamid.clone()),
+            team_number: Some(team_number),
+            first_tick: event
+                .get("tick")
+                .and_then(number_as_i64)
+                .unwrap_or(i64::MAX),
+            source_priority,
+        };
+        let should_replace = players.get(&steamid).is_none_or(|current| {
+            (candidate.source_priority, candidate.first_tick)
+                < (current.source_priority, current.first_tick)
+        });
+        if should_replace {
+            players.insert(steamid, candidate);
+        }
+    }
+
+    for (index, fallback) in fallback_players.iter().enumerate() {
+        let steamid = value_as_string(fallback.get("steamid"));
+        let name = fallback
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let key = steamid
+            .clone()
+            .unwrap_or_else(|| format!("fallback:{name}:{index}"));
+        if let Some(current) = players.get_mut(&key) {
+            if current.name.is_empty() {
+                current.name = name;
+            }
+            continue;
+        }
+        players.insert(
+            key,
+            InitialPlayerIdentity {
+                name,
+                steamid,
+                // End-of-match metadata reports the player's final side, so it must not be
+                // used as a stable team identity when no initial spawn evidence exists.
+                team_number: None,
+                first_tick: i64::MAX,
+                source_priority: 2,
+            },
+        );
+    }
+
+    let mut players: Vec<InitialPlayerIdentity> = players.into_values().collect();
+    players.sort_by(|left, right| {
+        stable_team_rank(left.team_number)
+            .cmp(&stable_team_rank(right.team_number))
+            .then(left.first_tick.cmp(&right.first_tick))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    players
+        .into_iter()
+        .map(|player| {
+            let (stable_team, initial_side) = stable_team_identity(player.team_number);
+            json!({
+                "name": player.name,
+                "steamid": player.steamid,
+                "team_number": player.team_number,
+                "stable_team": stable_team,
+                "initial_side": initial_side,
+            })
+        })
+        .collect()
+}
+
+fn value_as_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| {
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_u64().map(|number| number.to_string()))
+            .or_else(|| value.as_i64().map(|number| number.to_string()))
+    })
+}
+
+fn stable_team_identity(team_number: Option<i64>) -> (Option<&'static str>, Option<&'static str>) {
+    match team_number {
+        Some(3) => (Some("A"), Some("CT")),
+        Some(2) => (Some("B"), Some("T")),
+        _ => (None, None),
+    }
+}
+
+fn stable_team_rank(team_number: Option<i64>) -> u8 {
+    match team_number {
+        Some(3) => 0,
+        Some(2) => 1,
+        _ => 2,
+    }
 }
 
 fn list_game_events_sync(path: &str) -> AppResult<ToolResult> {
@@ -1032,6 +1188,68 @@ mod tests {
     }
 
     #[test]
+    fn player_info_uses_first_competitive_side_as_stable_team() {
+        let events = vec![
+            json!({
+                "event_name": "player_spawn",
+                "tick": 10,
+                "is_warmup_period": true,
+                "user_name": "Alpha",
+                "user_steamid": "1",
+                "user_team_num": 2,
+            }),
+            json!({
+                "event_name": "player_first_connect",
+                "tick": 20,
+                "name": "Alpha",
+                "steamid": "1",
+                "user_team_num": 2,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Alpha",
+                "user_steamid": "1",
+                "user_team_num": 3,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Bravo",
+                "user_steamid": "2",
+                "user_team_num": 2,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 10_000,
+                "is_warmup_period": false,
+                "user_name": "Alpha",
+                "user_steamid": "1",
+                "user_team_num": 2,
+            }),
+        ];
+        let fallback = vec![
+            json!({ "name": "Alpha", "steamid": "1", "team_number": 2 }),
+            json!({ "name": "Bravo", "steamid": "2", "team_number": 3 }),
+            json!({ "name": "Unknown", "steamid": "3", "team_number": 3 }),
+        ];
+
+        let players = build_initial_player_info(&events, &fallback);
+
+        assert_eq!(players[0]["name"], json!("Alpha"));
+        assert_eq!(players[0]["team_number"], json!(3));
+        assert_eq!(players[0]["stable_team"], json!("A"));
+        assert_eq!(players[0]["initial_side"], json!("CT"));
+        assert_eq!(players[1]["name"], json!("Bravo"));
+        assert_eq!(players[1]["stable_team"], json!("B"));
+        assert_eq!(players[2]["name"], json!("Unknown"));
+        assert!(players[2]["team_number"].is_null());
+        assert!(players[2]["stable_team"].is_null());
+    }
+
+    #[test]
     fn byte_budget_uses_equidistant_sampling_and_updates_metadata() {
         let rows: Vec<Value> = (0..200)
             .map(|index| json!({ "index": index, "payload": "x".repeat(20_000) }))
@@ -1105,6 +1323,23 @@ mod tests {
             header.data.get("demo_version_name").and_then(Value::as_str),
             Some("valve_demo_2")
         );
+
+        let players = get_player_info_sync(&path).expect("fixture player info should parse");
+        let players = players
+            .data
+            .as_array()
+            .expect("fixture player info should be an array");
+        assert!(players.len() >= 10);
+        assert!(players.iter().all(|player| matches!(
+            player.get("stable_team").and_then(Value::as_str),
+            Some("A" | "B")
+        )));
+        assert!(players
+            .iter()
+            .any(|player| player.get("stable_team") == Some(&json!("A"))));
+        assert!(players
+            .iter()
+            .any(|player| player.get("stable_team") == Some(&json!("B"))));
 
         let events = query_events_sync(QueryEventsRequest {
             path: path.clone(),

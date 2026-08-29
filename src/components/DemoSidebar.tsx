@@ -14,7 +14,6 @@ import {
   asObject,
   asObjectArray,
   fileName,
-  readNumber,
   readString,
 } from "../app/display";
 import type { ConversationState } from "../app/types";
@@ -104,6 +103,9 @@ export function DemoSidebar({
           </Typography>
         ) : (
           <Stack spacing={0.4}>
+            <Typography sx={{ mb: 0.65, color: "#687068", fontSize: "0.58rem", lineHeight: 1.45 }}>
+              {t("roster.teamHint")}
+            </Typography>
             {roster.map((player, index) => (
               <PlayerRow player={player} index={index} key={playerKey(player, index)} t={t} />
             ))}
@@ -165,25 +167,39 @@ function Fact({ label, value, accent = false }: { label: string; value: string; 
 function PlayerRow({ player, index, t }: { player: JsonObject; index: number; t: Translator }) {
   const name = readString(player, "name", "player_name") || t("roster.player", { number: index + 1 });
   const steamId = readString(player, "steamid", "steam_id");
-  const team = readNumber(player, "team_number", "team_num");
+  const stableTeam = readString(player, "stable_team");
+  const isTeamA = stableTeam === "A";
+  const isTeamB = stableTeam === "B";
+  const teamLabel = isTeamA
+    ? t("roster.teamA")
+    : isTeamB
+      ? t("roster.teamB")
+      : "—";
+  const teamDescription = isTeamA
+    ? t("roster.teamAInitial")
+    : isTeamB
+      ? t("roster.teamBInitial")
+      : t("roster.teamUnknown");
   return (
     <Stack direction="row" spacing={0.8} sx={{ minWidth: 0, minHeight: 27, alignItems: "center" }}>
-      <Chip
-        label={team === 2 ? "T" : team === 3 ? "CT" : "—"}
-        sx={(theme) => ({
-          width: 27,
-          height: 19,
-          flex: "0 0 auto",
-          color: team === 2 ? "warning.main" : team === 3 ? "secondary.main" : "text.secondary",
-          borderColor:
-            team === 2
-              ? alpha(theme.palette.warning.main, 0.3)
-              : team === 3
+      <Tooltip title={teamDescription} placement="left">
+        <Chip
+          aria-label={teamDescription}
+          label={teamLabel}
+          sx={(theme) => ({
+            minWidth: 45,
+            height: 19,
+            flex: "0 0 auto",
+            color: isTeamA ? "primary.main" : isTeamB ? "secondary.main" : "text.secondary",
+            borderColor: isTeamA
+              ? alpha(theme.palette.primary.main, 0.3)
+              : isTeamB
                 ? alpha(theme.palette.secondary.main, 0.3)
                 : undefined,
-          "& .MuiChip-label": { px: 0.25, fontWeight: 750 },
-        })}
-      />
+            "& .MuiChip-label": { px: 0.55, fontWeight: 750 },
+          })}
+        />
+      </Tooltip>
       <Typography noWrap title={steamId || name} sx={{ color: "#b4bbb4", fontSize: "0.65rem" }}>
         {name}
       </Typography>
