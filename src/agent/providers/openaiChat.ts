@@ -142,6 +142,7 @@ export class OpenAiChatAdapter implements ProviderAdapter {
           toolCalls.set(index, current);
         }
       },
+      request.signal,
     );
 
     if (finalTurn) {

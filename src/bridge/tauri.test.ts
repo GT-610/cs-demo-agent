@@ -195,6 +195,43 @@ describe("Tauri bridge", () => {
     ).rejects.toThrow("HTTP 401: invalid API key");
   });
 
+  test("cancels an active provider stream through the host", async () => {
+    const calls: Array<{ command: string; requestId?: unknown }> = [];
+    let rejectStream!: (error: Error) => void;
+    const invoke: InvokeFunction = (command, args) => {
+      calls.push({ command, requestId: args?.requestId });
+      if (command === "cancel_http_stream") {
+        rejectStream(new Error("provider request error: request stopped"));
+        return Promise.resolve(undefined as never);
+      }
+      return new Promise((_resolve, reject) => {
+        rejectStream = reject;
+      });
+    };
+    const channel = { onmessage: (_event: unknown) => undefined };
+    const controller = new AbortController();
+    const transport = createHttpStreamTransport(invoke, () => channel as never);
+
+    const request = transport(
+      {
+        url: "https://api.example.test/v1/responses",
+        headers: {},
+        body: { stream: true },
+        timeoutMs: 30_000,
+      },
+      () => undefined,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls.map((call) => call.command)).toEqual([
+      "stream_http_json",
+      "cancel_http_stream",
+    ]);
+    expect(calls[0]?.requestId).toBe(calls[1]?.requestId);
+  });
+
   test("loads header and roster together", async () => {
     const commands: string[] = [];
     const invoke: InvokeFunction = async (command) => {

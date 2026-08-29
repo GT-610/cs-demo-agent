@@ -186,6 +186,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           streamError = error instanceof Error ? error : new Error(String(error));
         }
       },
+      request.signal,
     );
     if (streamError) throw streamError;
     const output =

@@ -337,4 +337,68 @@ describe("AgentRuntime", () => {
     ).rejects.toThrow("event callback failed");
     expect(runtime.history).toHaveLength(1);
   });
+
+  test("stops tool execution and preserves a valid resumable history", async () => {
+    let toolStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      toolStarted = resolve;
+    });
+    const adapter = new SequenceAdapter([
+      {
+        text: "",
+        toolCalls: [
+          { id: "call-stop", name: "query_events", arguments: "{}" },
+        ],
+      },
+      { text: "continued", toolCalls: [] },
+    ]);
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async (_name, _input, signal) => {
+        toolStarted();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("stopped");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+    const controller = new AbortController();
+
+    const stopped = runtime.send("stop this", () => undefined, controller.signal);
+    await started;
+    controller.abort();
+
+    await expect(stopped).rejects.toMatchObject({ name: "AbortError" });
+    expect(runtime.history.slice(-3)).toEqual([
+      { role: "user", content: "stop this" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "call-stop", name: "query_events", arguments: "{}" },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call-stop",
+        name: "query_events",
+        content:
+          '{"error":"Tool execution was stopped","tool":"query_events"}',
+      },
+    ]);
+
+    await expect(runtime.send("continue")).resolves.toMatchObject({
+      text: "continued",
+    });
+  });
 });
