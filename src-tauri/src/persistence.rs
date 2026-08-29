@@ -201,8 +201,16 @@ pub fn load_workspace(state: State<'_, DatabaseState>) -> Result<WorkspaceSnapsh
 }
 
 #[tauri::command]
-pub fn save_provider_credentials(credentials: Vec<ProviderCredentialInput>) -> Result<(), String> {
-    save_provider_credentials_inner(&credentials).map_err(|error| error.to_string())
+pub fn save_provider_credentials(
+    state: State<'_, DatabaseState>,
+    credentials: Vec<ProviderCredentialInput>,
+) -> Result<(), String> {
+    state
+        .with_connection(|connection| {
+            let stored_references = stored_provider_credential_references(connection)?;
+            save_provider_credentials_inner(&credentials, &stored_references)
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -291,7 +299,24 @@ fn resolve_settings_with(
     })
 }
 
-fn save_provider_credentials_inner(credentials: &[ProviderCredentialInput]) -> AppResult<()> {
+fn save_provider_credentials_inner(
+    credentials: &[ProviderCredentialInput],
+    stored_references: &[String],
+) -> AppResult<()> {
+    save_provider_credentials_with(
+        credentials,
+        stored_references,
+        delete_provider_credential,
+        store_provider_credential,
+    )
+}
+
+fn save_provider_credentials_with(
+    credentials: &[ProviderCredentialInput],
+    stored_references: &[String],
+    mut delete_credential: impl FnMut(&str) -> AppResult<()>,
+    mut store_credential: impl FnMut(&str, &str) -> AppResult<()>,
+) -> AppResult<()> {
     if credentials.len() > MAX_PROVIDERS {
         return Err(AppError::InvalidInput(format!(
             "cannot save more than {MAX_PROVIDERS} provider credentials"
@@ -312,20 +337,40 @@ fn save_provider_credentials_inner(credentials: &[ProviderCredentialInput]) -> A
             ));
         }
     }
+    for reference in stored_references {
+        if !references.contains(reference.as_str()) {
+            delete_credential(reference)?;
+        }
+    }
     for credential in credentials {
-        let entry = credential_entry(&credential.credential_ref)?;
         if credential.api_key.is_empty() {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(error) => return Err(AppError::Credential(error.to_string())),
-            }
+            delete_credential(&credential.credential_ref)?;
         } else {
-            entry
-                .set_password(&credential.api_key)
-                .map_err(|error| AppError::Credential(error.to_string()))?;
+            store_credential(&credential.credential_ref, &credential.api_key)?;
         }
     }
     Ok(())
+}
+
+fn stored_provider_credential_references(connection: &Connection) -> AppResult<Vec<String>> {
+    Ok(load_settings_inner(connection)?
+        .into_iter()
+        .flat_map(|settings| settings.providers)
+        .map(|provider| provider.credential_ref)
+        .collect())
+}
+
+fn delete_provider_credential(reference: &str) -> AppResult<()> {
+    match credential_entry(reference)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(AppError::Credential(error.to_string())),
+    }
+}
+
+fn store_provider_credential(reference: &str, api_key: &str) -> AppResult<()> {
+    credential_entry(reference)?
+        .set_password(api_key)
+        .map_err(|error| AppError::Credential(error.to_string()))
 }
 
 fn load_provider_credential(reference: &str) -> AppResult<String> {
@@ -413,10 +458,23 @@ fn initialize_settings_table(connection: &mut Connection) -> AppResult<()> {
         "default_provider_id",
         "schema_version",
     ];
+    let schema_version = if columns.contains("schema_version") {
+        connection
+            .query_row(
+                "SELECT schema_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::Database(error.to_string()))?
+    } else {
+        None
+    };
     if !columns.contains("api_key")
         && current_columns
             .iter()
             .all(|column| columns.contains(*column))
+        && schema_version.is_none_or(|version| version >= SETTINGS_SCHEMA_VERSION)
     {
         return Ok(());
     }
@@ -517,12 +575,9 @@ fn migrate_legacy_settings(
     default_provider_id: Option<String>,
     providers_json: Option<String>,
 ) -> AppResult<StoredSettings> {
-    migrate_legacy_settings_with(
-        locale,
-        default_provider_id,
-        providers_json,
-        save_provider_credentials_inner,
-    )
+    migrate_legacy_settings_with(locale, default_provider_id, providers_json, |credentials| {
+        save_provider_credentials_inner(credentials, &[])
+    })
 }
 
 fn migrate_legacy_settings_with(
@@ -566,8 +621,14 @@ fn migrate_legacy_settings_with(
             providers: Vec::new(),
         });
     }
-    save_credentials(&credentials)?;
-    Ok(settings)
+    if save_credentials(&credentials).is_ok() {
+        return Ok(settings);
+    }
+    Ok(StoredSettings {
+        locale: settings.locale,
+        default_provider_id: None,
+        providers: Vec::new(),
+    })
 }
 
 fn load_settings_inner(connection: &Connection) -> AppResult<Option<StoredSettings>> {
@@ -1088,6 +1149,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_credentials_replace_the_stored_reference_set() {
+        let credentials = vec![
+            ProviderCredentialInput {
+                credential_ref: "retained".to_string(),
+                api_key: "new-key".to_string(),
+            },
+            ProviderCredentialInput {
+                credential_ref: "cleared".to_string(),
+                api_key: String::new(),
+            },
+        ];
+        let stored_references = vec![
+            "removed".to_string(),
+            "retained".to_string(),
+            "cleared".to_string(),
+        ];
+        let mut deleted = Vec::new();
+        let mut stored = Vec::new();
+
+        save_provider_credentials_with(
+            &credentials,
+            &stored_references,
+            |reference| {
+                deleted.push(reference.to_string());
+                Ok(())
+            },
+            |reference, api_key| {
+                stored.push((reference.to_string(), api_key.to_string()));
+                Ok(())
+            },
+        )
+        .expect("replace provider credentials");
+
+        assert_eq!(deleted, vec!["removed", "cleared"]);
+        assert_eq!(
+            stored,
+            vec![("retained".to_string(), "new-key".to_string())]
+        );
+    }
+
+    #[test]
     fn legacy_provider_keys_move_to_credentials_before_sqlite_migration() {
         let providers_json = serde_json::json!([{
             "id": "provider-openai",
@@ -1124,6 +1226,36 @@ mod tests {
         assert!(!serde_json::to_string(&migrated)
             .expect("serialize migrated settings")
             .contains("test-key"));
+    }
+
+    #[test]
+    fn legacy_migration_discards_providers_when_credential_storage_fails() {
+        let providers_json = serde_json::json!([{
+            "id": "provider-openai",
+            "name": "OpenAI",
+            "kind": "openai-responses",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "test-key",
+            "models": ["gpt-test"],
+            "maxOutputTokens": 4096
+        }])
+        .to_string();
+
+        let migrated = migrate_legacy_settings_with(
+            "zh-CN".to_string(),
+            Some("provider-openai".to_string()),
+            Some(providers_json),
+            |_| {
+                Err(AppError::Credential(
+                    "credential store unavailable".to_string(),
+                ))
+            },
+        )
+        .expect("migrate legacy settings");
+
+        assert_eq!(migrated.locale, "zh-CN");
+        assert_eq!(migrated.default_provider_id, None);
+        assert!(migrated.providers.is_empty());
     }
 
     #[test]
@@ -1278,5 +1410,33 @@ mod tests {
         assert_eq!(sessions[0].id, "legacy");
         assert_eq!(sessions[0].provider_id, "");
         assert_eq!(sessions[0].model, "");
+    }
+
+    #[test]
+    fn current_columns_with_an_old_schema_version_are_migrated() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     locale TEXT NOT NULL,
+                     providers_json TEXT NOT NULL,
+                     default_provider_id TEXT,
+                     schema_version INTEGER NOT NULL
+                 );
+                 INSERT INTO settings VALUES (1, 'en', '[]', NULL, 2);",
+            )
+            .expect("old current-shape schema");
+
+        initialize_connection(&mut connection).expect("migrate settings");
+
+        let schema_version: u32 = connection
+            .query_row(
+                "SELECT schema_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema version");
+        assert_eq!(schema_version, SETTINGS_SCHEMA_VERSION);
     }
 }

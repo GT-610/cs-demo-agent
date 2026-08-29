@@ -23,7 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import { useState, type MouseEvent } from "react";
+import { useRef, useState, type MouseEvent } from "react";
 import type { SessionSummary } from "../bridge/persistence";
 import type { Translator } from "../i18n";
 
@@ -62,6 +62,12 @@ export function WorkspaceSidebar({
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [renameSubmitting, setRenameSubmitting] = useState(false);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const renameRequestRef = useRef(0);
+  const deleteRequestRef = useRef(0);
+  const renameSubmittingRef = useRef(false);
+  const deleteSubmittingRef = useRef(false);
 
   const handleActions = (event: MouseEvent<HTMLElement>, session: SessionSummary) => {
     event.preventDefault();
@@ -71,12 +77,54 @@ export function WorkspaceSidebar({
 
   const closeActions = () => setActions(null);
   const closeRenameDialog = () => {
+    renameRequestRef.current += 1;
+    renameSubmittingRef.current = false;
+    setRenameSubmitting(false);
     setRenameTarget(null);
     setActionError(null);
   };
   const closeDeleteDialog = () => {
+    deleteRequestRef.current += 1;
+    deleteSubmittingRef.current = false;
+    setDeleteSubmitting(false);
     setDeleteTarget(null);
     setActionError(null);
+  };
+  const submitRename = () => {
+    const target = renameTarget;
+    if (!target || !renameValue.trim() || renameSubmittingRef.current) return;
+    const requestId = ++renameRequestRef.current;
+    renameSubmittingRef.current = true;
+    setRenameSubmitting(true);
+    setActionError(null);
+    void onRenameSession(target.id, renameValue)
+      .then(() => {
+        if (renameRequestRef.current === requestId) closeRenameDialog();
+      })
+      .catch((caught) => {
+        if (renameRequestRef.current !== requestId) return;
+        renameSubmittingRef.current = false;
+        setRenameSubmitting(false);
+        setActionError(String(caught));
+      });
+  };
+  const submitDelete = () => {
+    const target = deleteTarget;
+    if (!target || deleteSubmittingRef.current) return;
+    const requestId = ++deleteRequestRef.current;
+    deleteSubmittingRef.current = true;
+    setDeleteSubmitting(true);
+    setActionError(null);
+    void onDeleteSession(target.id)
+      .then(() => {
+        if (deleteRequestRef.current === requestId) closeDeleteDialog();
+      })
+      .catch((caught) => {
+        if (deleteRequestRef.current !== requestId) return;
+        deleteSubmittingRef.current = false;
+        setDeleteSubmitting(false);
+        setActionError(String(caught));
+      });
   };
 
   return (
@@ -220,6 +268,9 @@ export function WorkspaceSidebar({
         <MenuItem
           onClick={() => {
             if (actions) {
+              renameRequestRef.current += 1;
+              renameSubmittingRef.current = false;
+              setRenameSubmitting(false);
               setActionError(null);
               setRenameTarget(actions.session);
               setRenameValue(actions.session.title);
@@ -233,6 +284,9 @@ export function WorkspaceSidebar({
         <MenuItem
           onClick={() => {
             if (actions) {
+              deleteRequestRef.current += 1;
+              deleteSubmittingRef.current = false;
+              setDeleteSubmitting(false);
               setActionError(null);
               setDeleteTarget(actions.session);
             }
@@ -262,9 +316,7 @@ export function WorkspaceSidebar({
             onKeyDown={(event) => {
               if (event.key === "Enter" && renameValue.trim() && renameTarget) {
                 event.preventDefault();
-                void onRenameSession(renameTarget.id, renameValue)
-                  .then(closeRenameDialog)
-                  .catch((caught) => setActionError(String(caught)));
+                submitRename();
               }
             }}
           />
@@ -273,13 +325,8 @@ export function WorkspaceSidebar({
           <Button onClick={closeRenameDialog}>{t("action.cancel")}</Button>
           <Button
             variant="contained"
-            disabled={!renameValue.trim()}
-            onClick={() => {
-              if (!renameTarget) return;
-              void onRenameSession(renameTarget.id, renameValue)
-                .then(closeRenameDialog)
-                .catch((caught) => setActionError(String(caught)));
-            }}
+            disabled={!renameValue.trim() || renameSubmitting}
+            onClick={submitRename}
           >
             {t("action.save")}
           </Button>
@@ -303,12 +350,8 @@ export function WorkspaceSidebar({
           <Button
             color="error"
             variant="contained"
-            onClick={() => {
-              if (!deleteTarget) return;
-              void onDeleteSession(deleteTarget.id)
-                .then(closeDeleteDialog)
-                .catch((caught) => setActionError(String(caught)));
-            }}
+            disabled={deleteSubmitting}
+            onClick={submitDelete}
           >
             {t("sessions.delete")}
           </Button>

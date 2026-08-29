@@ -153,9 +153,10 @@ export function useWorkspace(initialLocale: Locale) {
 
   useEffect(() => {
     let active = true;
+    const loadId = ++loadRef.current;
     void loadWorkspace()
       .then((snapshot) => {
-        if (!active) return;
+        if (!active || loadRef.current !== loadId) return;
         const loadedSettings = normalizeSettings(snapshot.settings, initialLocale);
         settingsRef.current = loadedSettings;
         settingsDraftRef.current = loadedSettings;
@@ -165,10 +166,10 @@ export function useWorkspace(initialLocale: Locale) {
         replaceConversation(createEmptyConversation(loadedSettings));
       })
       .catch((caught) => {
-        if (active) setError(errorMessage(caught));
+        if (active && loadRef.current === loadId) setError(errorMessage(caught));
       })
       .finally(() => {
-        if (active) setInitialized(true);
+        if (active && loadRef.current === loadId) setInitialized(true);
       });
     return () => {
       active = false;
