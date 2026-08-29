@@ -230,20 +230,16 @@ export function useWorkspace(initialLocale: Locale) {
     const navigationId = navigationRef.current;
     void loadWorkspace()
       .then((snapshot) => {
-        if (
-          !active ||
-          bootstrapLoadRef.current !== loadId ||
-          navigationRef.current !== navigationId
-        ) {
-          return;
-        }
+        if (!active || bootstrapLoadRef.current !== loadId) return;
         const loadedSettings = normalizeSettings(snapshot.settings, initialLocale);
         settingsRef.current = loadedSettings;
         settingsDraftRef.current = loadedSettings;
         setSettingsState(loadedSettings);
         setSettingsDraftState(loadedSettings);
         setSessions(snapshot.sessions);
-        replaceConversation(createEmptyConversation(loadedSettings));
+        if (navigationRef.current === navigationId) {
+          replaceConversation(createEmptyConversation(loadedSettings));
+        }
       })
       .catch((caught) => {
         if (
