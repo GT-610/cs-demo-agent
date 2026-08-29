@@ -1,6 +1,6 @@
 # CS Demo Agent
 
-<!-- Screenshot placeholder: add an application screenshot here. -->
+![App Demo](https://github.com/user-attachments/assets/1187be64-ff61-451b-88d8-3850a2524a7d)
 
 CS Demo Agent is a desktop application for exploring Counter-Strike 2 demo files locally. It combines a Rust demo parser with tool-calling models, so answers can be checked against the events, rounds, ticks, economy records, and grenade trajectories in the selected demo.
 
