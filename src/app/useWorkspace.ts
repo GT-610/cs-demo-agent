@@ -505,6 +505,7 @@ export function useWorkspace(initialLocale: Locale) {
     (
       sessionId: string,
       workspace: SessionWorkspace,
+      settingsSnapshot: StoredSettings,
       question: string,
       turnId: string,
       controller: AbortController,
@@ -514,7 +515,7 @@ export function useWorkspace(initialLocale: Locale) {
         cache = getRuntime(
           sessionId,
           workspace.conversation,
-          settingsRef.current,
+          settingsSnapshot,
           workspace.runtime,
         );
       } catch (caught) {
@@ -622,7 +623,8 @@ export function useWorkspace(initialLocale: Locale) {
   const submit = useCallback(async () => {
     const question = draft.trim();
     const initial = conversationRef.current;
-    const profile = getProviderProfile(settingsRef.current, initial.providerId);
+    const settingsSnapshot = settingsRef.current;
+    const profile = getProviderProfile(settingsSnapshot, initial.providerId);
     const currentSessionId = activeSessionIdRef.current;
     const currentWorkspace = currentSessionId
       ? sessionWorkspacesRef.current.get(currentSessionId)
@@ -659,6 +661,7 @@ export function useWorkspace(initialLocale: Locale) {
       await runSessionTask(
         currentSessionId,
         currentWorkspace,
+        settingsSnapshot,
         question,
         turnId,
         new AbortController(),
@@ -699,6 +702,7 @@ export function useWorkspace(initialLocale: Locale) {
       await runSessionTask(
         created.id,
         workspace,
+        settingsSnapshot,
         question,
         turnId,
         controller,
@@ -731,9 +735,9 @@ export function useWorkspace(initialLocale: Locale) {
 
   const profile = getProviderProfile(settings, conversation.providerId);
   const providerReady = isProviderReady(profile, conversation.model);
-  const sending = activeSessionId
-    ? runningSessionIds.has(activeSessionId)
-    : newSessionSending;
+  const sending = newSessionSending || (
+    activeSessionId !== null && runningSessionIds.has(activeSessionId)
+  );
   const canSend =
     initialized &&
     !!conversation.demoPath &&
