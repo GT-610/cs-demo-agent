@@ -312,7 +312,12 @@ function TimelineItem({ entry, t }: { entry: TimelineEntry; t: Translator }) {
             {entry.content}
           </ReactMarkdown>
         ) : (
-          <Box className="thinking-bars" aria-label={t("chat.working")}><span /><span /><span /></Box>
+          <Stack direction="row" spacing={0.9} aria-label={t("chat.working")} sx={{ minHeight: 31, alignItems: "center" }}>
+            <CircularProgress size={14} thickness={4.2} />
+            <Typography sx={{ color: "#8f988f", fontSize: "0.68rem" }}>
+              {t("chat.working")}
+            </Typography>
+          </Stack>
         )}
         {entry.status === "streaming" && entry.content && <span className="streaming-cursor" aria-hidden="true" />}
       </Box>
