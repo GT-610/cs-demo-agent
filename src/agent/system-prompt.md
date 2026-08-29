@@ -75,7 +75,7 @@
 ```json
 { "name": "get_player_info", "parameters": { "type":"object","properties":{"path":{"type":"string"}},"required":["path"]} }
 ```
-返回 `[{name, steamid, team_number, stable_team, initial_side}]`。`team_number: 3` / `stable_team: "A"` / `initial_side: "CT"` 表示 A 队；`team_number: 2` / `stable_team: "B"` / `initial_side: "T"` 表示 B 队。若 Demo 缺少初始出场证据，这三个身份字段可能为 `null`，不得用终场阵营猜测。
+返回 `[{name, steamid, team_number, stable_team, initial_side}]`。`team_number: 3` / `stable_team: "A"` / `initial_side: "CT"` 表示 A 队；`team_number: 2` / `stable_team: "B"` / `initial_side: "T"` 表示 B 队。若无法用初始出场证据建立该队的映射，这三个身份字段可能为 `null`；不得只根据终场阵营猜测。
 
 ### 4.3 `list_game_events`
 枚举该 Demo 实际包含的 game event 名（约等于一次 `parseEvent` 的开销）。

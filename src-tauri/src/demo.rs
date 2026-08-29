@@ -377,6 +377,31 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
         }
     }
 
+    let mut initial_team_by_final_side = HashMap::new();
+    let mut ambiguous_final_sides = HashSet::new();
+    for fallback in fallback_players {
+        let Some(steamid) = value_as_string(fallback.get("steamid")) else {
+            continue;
+        };
+        let Some(final_side) = fallback_team_number(fallback) else {
+            continue;
+        };
+        let Some(initial_team) = players.get(&steamid).and_then(|player| player.team_number) else {
+            continue;
+        };
+        if ambiguous_final_sides.contains(&final_side) {
+            continue;
+        }
+        if let Some(existing_team) = initial_team_by_final_side.get(&final_side) {
+            if *existing_team != initial_team {
+                initial_team_by_final_side.remove(&final_side);
+                ambiguous_final_sides.insert(final_side);
+            }
+        } else {
+            initial_team_by_final_side.insert(final_side, initial_team);
+        }
+    }
+
     for (index, fallback) in fallback_players.iter().enumerate() {
         let steamid = value_as_string(fallback.get("steamid"));
         let name = fallback
@@ -393,14 +418,20 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
             }
             continue;
         }
+        let team_number = fallback_team_number(fallback).and_then(|final_side| {
+            (!ambiguous_final_sides.contains(&final_side))
+                .then(|| initial_team_by_final_side.get(&final_side).copied())
+                .flatten()
+        });
         players.insert(
             key,
             InitialPlayerIdentity {
                 name,
                 steamid,
-                // End-of-match metadata reports the player's final side, so it must not be
-                // used as a stable team identity when no initial spawn evidence exists.
-                team_number: None,
+                // End-of-match metadata cannot establish a stable team by itself. It can,
+                // however, complete a roster when spawn evidence maps that final side to
+                // Team A or Team B.
+                team_number,
                 first_tick: i64::MAX,
                 source_priority: 2,
             },
@@ -427,6 +458,13 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
             })
         })
         .collect()
+}
+
+fn fallback_team_number(player: &Value) -> Option<i64> {
+    player
+        .get("team_number")
+        .and_then(number_as_i64)
+        .filter(|team| matches!(team, 2 | 3))
 }
 
 fn value_as_string(value: Option<&Value>) -> Option<String> {
@@ -1245,8 +1283,19 @@ mod tests {
         assert_eq!(players[1]["name"], json!("Bravo"));
         assert_eq!(players[1]["stable_team"], json!("B"));
         assert_eq!(players[2]["name"], json!("Unknown"));
-        assert!(players[2]["team_number"].is_null());
-        assert!(players[2]["stable_team"].is_null());
+        assert_eq!(players[2]["team_number"], json!(2));
+        assert_eq!(players[2]["stable_team"], json!("B"));
+    }
+
+    #[test]
+    fn player_info_does_not_guess_without_initial_side_evidence() {
+        let players = build_initial_player_info(
+            &[],
+            &[json!({ "name": "Unknown", "steamid": "1", "team_number": 3 })],
+        );
+
+        assert!(players[0]["team_number"].is_null());
+        assert!(players[0]["stable_team"].is_null());
     }
 
     #[test]

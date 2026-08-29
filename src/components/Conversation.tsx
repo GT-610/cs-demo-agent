@@ -108,7 +108,17 @@ export function Conversation({
         aria-live="polite"
         sx={{ minHeight: 0, overflow: "auto", scrollBehavior: "smooth", scrollbarColor: "#343834 transparent" }}
       >
-        <Box sx={{ width: "min(790px, calc(100% - 36px))", minHeight: "100%", mx: "auto", py: 3.5 }}>
+        <Box
+          sx={{
+            display: entries.length === 0 ? "flex" : "block",
+            boxSizing: "border-box",
+            width: "min(790px, calc(100% - 36px))",
+            minHeight: "100%",
+            height: entries.length === 0 ? "100%" : undefined,
+            mx: "auto",
+            py: 3.5,
+          }}
+        >
           {entries.length === 0 ? (
             <EmptyConversation
               hasDemo={!!demoPath}
@@ -361,7 +371,7 @@ function EmptyConversation({
   const title = !hasDemo ? t("empty.loadTitle") : !providerReady ? t("empty.providerTitle") : t("empty.readyTitle");
   const detail = !hasDemo ? t("empty.loadDetail") : !providerReady ? t("empty.providerDetail") : t("empty.readyDetail");
   return (
-    <Stack sx={{ minHeight: "100%", textAlign: "center", alignItems: "center", justifyContent: "center" }}>
+    <Stack sx={{ width: "100%", flex: 1, textAlign: "center", alignItems: "center", justifyContent: "center" }}>
       <Box className="radar-graphic" aria-hidden="true"><span /><span /><MyLocationOutlinedIcon /></Box>
       <Typography variant="overline">{t("empty.kicker")}</Typography>
       <Typography component="h2" sx={{ mt: 1, color: "#dfe3df", fontSize: "1.08rem", fontWeight: 650 }}>
