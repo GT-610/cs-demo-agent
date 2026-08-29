@@ -3,8 +3,8 @@ import {
   useEffect,
   useRef,
   useState,
-  type MutableRefObject,
 } from "react";
+import { isAbortError } from "../agent/cancellation";
 import systemPrompt from "../agent/system-prompt.md?raw";
 import { createProviderAdapter } from "../agent/providers";
 import { AgentRuntime } from "../agent/runtime";
@@ -60,6 +60,19 @@ interface RuntimeCache {
   runtime: AgentRuntime;
 }
 
+interface RunningTask {
+  controller: AbortController;
+  promise: Promise<void>;
+}
+
+interface SessionWorkspace {
+  conversation: ConversationState;
+  runtime?: RuntimeCache;
+  task?: RunningTask;
+  error: string | null;
+  status: StatusMessage;
+}
+
 export function useWorkspace(initialLocale: Locale) {
   const initialSettings = createDefaultSettings(initialLocale);
   const [settings, setSettingsState] = useState<StoredSettings>(initialSettings);
@@ -77,18 +90,21 @@ export function useWorkspace(initialLocale: Locale) {
   const [initialized, setInitialized] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [newSessionSending, setNewSessionSending] = useState(false);
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusMessage>({ key: "status.readyDemo" });
 
   const settingsRef = useRef(settings);
   const settingsDraftRef = useRef(settingsDraft);
   const settingsSavingRef = useRef(false);
-  const sendingRef = useRef(false);
+  const pendingSessionRef = useRef<AbortController | null>(null);
   const conversationRef = useRef(conversation);
   const activeSessionIdRef = useRef<string | null>(null);
-  const runtimeRef = useRef<RuntimeCache | null>(null);
-  const revisionRef = useRef(0);
+  const pageRef = useRef<WorkspacePage>("conversation");
+  const sessionWorkspacesRef = useRef(new Map<string, SessionWorkspace>());
   const loadRef = useRef(0);
 
   const replaceConversation = useCallback((next: ConversationState) => {
@@ -106,6 +122,59 @@ export function useWorkspace(initialLocale: Locale) {
   const setActiveSessionId = useCallback((id: string | null) => {
     activeSessionIdRef.current = id;
     setActiveSessionIdState(id);
+  }, []);
+
+  const replacePage = useCallback((next: WorkspacePage) => {
+    pageRef.current = next;
+    setPage(next);
+  }, []);
+
+  const updateSessionConversation = useCallback(
+    (
+      sessionId: string,
+      update: (current: ConversationState) => ConversationState,
+    ) => {
+      const workspace = sessionWorkspacesRef.current.get(sessionId);
+      if (!workspace) return;
+      const next = update(workspace.conversation);
+      workspace.conversation = next;
+      if (
+        activeSessionIdRef.current === sessionId &&
+        pageRef.current === "conversation"
+      ) {
+        replaceConversation(next);
+      }
+    },
+    [replaceConversation],
+  );
+
+  const setSessionFeedback = useCallback(
+    (
+      sessionId: string,
+      next: { error?: string | null; status?: StatusMessage },
+    ) => {
+      const workspace = sessionWorkspacesRef.current.get(sessionId);
+      if (!workspace) return;
+      if ("error" in next) workspace.error = next.error ?? null;
+      if (next.status) workspace.status = next.status;
+      if (
+        activeSessionIdRef.current === sessionId &&
+        pageRef.current === "conversation"
+      ) {
+        if ("error" in next) setError(next.error ?? null);
+        if (next.status) setStatus(next.status);
+      }
+    },
+    [],
+  );
+
+  const setActiveError = useCallback((next: string | null) => {
+    setError(next);
+    const sessionId = activeSessionIdRef.current;
+    if (sessionId) {
+      const workspace = sessionWorkspacesRef.current.get(sessionId);
+      if (workspace) workspace.error = next;
+    }
   }, []);
 
   const updateSettingsDraft = useCallback(
@@ -141,7 +210,9 @@ export function useWorkspace(initialLocale: Locale) {
       } else {
         setSettingsDirty(!settingsEqual(next, settingsDraftRef.current));
       }
-      runtimeRef.current = null;
+      for (const workspace of sessionWorkspacesRef.current.values()) {
+        if (!workspace.task) workspace.runtime = undefined;
+      }
       setStatus({ key: "status.configurationChanged" });
     } catch (caught) {
       setSettingsSaveError(errorMessage(caught));
@@ -184,31 +255,37 @@ export function useWorkspace(initialLocale: Locale) {
   }, [activeSessionId, conversation.model, conversation.providerId, mutateConversation, settings]);
 
   const startNewSession = useCallback(() => {
-    if (sending) return;
-    revisionRef.current += 1;
     loadRef.current += 1;
-    runtimeRef.current = null;
+    setSessionLoading(false);
     setActiveSessionId(null);
-    setPage("conversation");
+    replacePage("conversation");
     setDraft("");
     setError(null);
     setStatus({ key: "status.readyDemo" });
     replaceConversation(createEmptyConversation(settingsRef.current));
-  }, [replaceConversation, sending, setActiveSessionId]);
+  }, [replaceConversation, replacePage, setActiveSessionId]);
 
   const openSettings = useCallback(() => {
-    if (!sending) setPage("settings");
-  }, [sending]);
+    loadRef.current += 1;
+    setSessionLoading(false);
+    replacePage("settings");
+  }, [replacePage]);
 
   const openSession = useCallback(
     async (id: string) => {
-      if (sending || id === activeSessionIdRef.current) {
-        setPage("conversation");
+      const cached = sessionWorkspacesRef.current.get(id);
+      if (cached) {
+        loadRef.current += 1;
+        setSessionLoading(false);
+        setActiveSessionId(id);
+        replacePage("conversation");
+        setDraft("");
+        replaceConversation(cached.conversation);
+        setError(cached.error);
+        setStatus(cached.status);
         return;
       }
       const loadId = ++loadRef.current;
-      revisionRef.current += 1;
-      runtimeRef.current = null;
       setSessionLoading(true);
       setError(null);
       setStatus({ key: "status.loadingSession" });
@@ -220,19 +297,25 @@ export function useWorkspace(initialLocale: Locale) {
           loadDemoOverview(summary.demoPath),
         ]);
         if (loadRef.current !== loadId) return;
+        const workspace: SessionWorkspace = {
+          conversation: {
+            demoPath: detail.demoPath,
+            header: overview.header,
+            players: overview.players,
+            providerId: detail.providerId,
+            model: detail.model,
+            entries: deserializeTimeline(detail.messages),
+            runtimeState: detail.runtimeState as AgentRuntimeState | undefined,
+          },
+          error: null,
+          status: { key: "status.readyAnalysis" },
+        };
+        sessionWorkspacesRef.current.set(id, workspace);
         setActiveSessionId(id);
-        setPage("conversation");
+        replacePage("conversation");
         setDraft("");
-        replaceConversation({
-          demoPath: detail.demoPath,
-          header: overview.header,
-          players: overview.players,
-          providerId: detail.providerId,
-          model: detail.model,
-          entries: deserializeTimeline(detail.messages),
-          runtimeState: detail.runtimeState as AgentRuntimeState | undefined,
-        });
-        setStatus({ key: "status.readyAnalysis" });
+        replaceConversation(workspace.conversation);
+        setStatus(workspace.status);
       } catch (caught) {
         if (loadRef.current === loadId) {
           setError(errorMessage(caught));
@@ -242,12 +325,11 @@ export function useWorkspace(initialLocale: Locale) {
         if (loadRef.current === loadId) setSessionLoading(false);
       }
     },
-    [replaceConversation, sending, sessions, setActiveSessionId],
+    [replaceConversation, replacePage, sessions, setActiveSessionId],
   );
 
   const openDemo = useCallback(
     async (path: string, forceNew = false) => {
-      if (sending) return;
       if (forceNew || activeSessionIdRef.current !== null) startNewSession();
       const loadId = ++loadRef.current;
       setDemoLoading(true);
@@ -263,7 +345,7 @@ export function useWorkspace(initialLocale: Locale) {
           players: overview.players,
         });
         setActiveSessionId(null);
-        setPage("conversation");
+        replacePage("conversation");
         setStatus({ key: "status.demoReady" });
       } catch (caught) {
         if (loadRef.current === loadId) {
@@ -274,7 +356,7 @@ export function useWorkspace(initialLocale: Locale) {
         if (loadRef.current === loadId) setDemoLoading(false);
       }
     },
-    [replaceConversation, sending, setActiveSessionId, startNewSession],
+    [replaceConversation, replacePage, setActiveSessionId, startNewSession],
   );
 
   useEffect(() => {
@@ -293,7 +375,7 @@ export function useWorkspace(initialLocale: Locale) {
   }, [openDemo]);
 
   const chooseDemo = useCallback(async () => {
-    if (activeSessionIdRef.current !== null || sending) return;
+    if (activeSessionIdRef.current !== null || demoLoading) return;
     try {
       const path = await selectDemoFile(
         translate(settingsRef.current.locale, "demo.dialogTitle"),
@@ -302,14 +384,18 @@ export function useWorkspace(initialLocale: Locale) {
     } catch (caught) {
       setError(errorMessage(caught));
     }
-  }, [openDemo, sending]);
+  }, [demoLoading, openDemo]);
 
   const selectModel = useCallback(
     async (option: ModelOption) => {
-      if (sending) return;
       const sessionId = activeSessionIdRef.current;
+      if (
+        pendingSessionRef.current ||
+        (sessionId && sessionWorkspacesRef.current.get(sessionId)?.task)
+      ) {
+        return;
+      }
       const current = conversationRef.current;
-      runtimeRef.current = null;
       const next = {
         ...current,
         providerId: option.providerId,
@@ -317,6 +403,11 @@ export function useWorkspace(initialLocale: Locale) {
       };
       replaceConversation(next);
       if (!sessionId) return;
+      const workspace = sessionWorkspacesRef.current.get(sessionId);
+      if (workspace) {
+        workspace.conversation = next;
+        workspace.runtime = undefined;
+      }
       const updatedAt = Date.now();
       setSessions((items) =>
         sortSessions(
@@ -338,7 +429,7 @@ export function useWorkspace(initialLocale: Locale) {
         setError(errorMessage(caught));
       }
     },
-    [replaceConversation, sending],
+    [replaceConversation],
   );
 
   const renameSession = useCallback(async (id: string, title: string) => {
@@ -353,115 +444,269 @@ export function useWorkspace(initialLocale: Locale) {
     );
   }, []);
 
+  const stopSession = useCallback(
+    (id: string | null = activeSessionIdRef.current) => {
+      if (!id) {
+        pendingSessionRef.current?.abort();
+        return;
+      }
+      const task = sessionWorkspacesRef.current.get(id)?.task;
+      if (!task || task.controller.signal.aborted) return;
+      task.controller.abort();
+      setSessionFeedback(id, { status: { key: "status.stopping" } });
+    },
+    [setSessionFeedback],
+  );
+
   const deleteSession = useCallback(
     async (id: string) => {
+      const workspace = sessionWorkspacesRef.current.get(id);
+      if (workspace?.task) {
+        workspace.task.controller.abort();
+        await workspace.task.promise;
+      }
       await deleteStoredSession(id);
+      sessionWorkspacesRef.current.delete(id);
+      setRunningSessionIds((current) => withoutSession(current, id));
       setSessions((items) => items.filter((item) => item.id !== id));
       if (activeSessionIdRef.current === id) startNewSession();
     },
     [startNewSession],
   );
 
+  const runSessionTask = useCallback(
+    (
+      sessionId: string,
+      workspace: SessionWorkspace,
+      question: string,
+      turnId: string,
+      controller: AbortController,
+    ): Promise<void> => {
+      let cache: RuntimeCache;
+      try {
+        cache = getRuntime(
+          sessionId,
+          workspace.conversation,
+          settingsRef.current,
+          workspace.runtime,
+        );
+      } catch (caught) {
+        setSessionFeedback(sessionId, {
+          error: errorMessage(caught),
+          status: { key: "status.analysisFailed" },
+        });
+        void persistConversation(
+          sessionId,
+          workspace.conversation,
+          Date.now(),
+        ).catch(() => undefined);
+        return Promise.resolve();
+      }
+      workspace.runtime = cache;
+      const task: RunningTask = {
+        controller,
+        promise: Promise.resolve(),
+      };
+      workspace.task = task;
+      workspace.error = null;
+      workspace.status = { key: "status.planning" };
+      setRunningSessionIds((current) => withSession(current, sessionId));
+      setSessionFeedback(sessionId, {
+        error: null,
+        status: workspace.status,
+      });
+
+      task.promise = (async () => {
+        try {
+          await cache.runtime.send(
+            question,
+            (event) => {
+              applyAgentEvent(
+                event,
+                turnId,
+                (update) => updateSessionConversation(sessionId, update),
+                (nextStatus) =>
+                  setSessionFeedback(sessionId, { status: nextStatus }),
+              );
+            },
+            controller.signal,
+          );
+          updateSessionConversation(sessionId, (current) => ({
+            ...current,
+            runtimeState: cache.runtime.state,
+          }));
+          setSessionFeedback(sessionId, { status: { key: "status.complete" } });
+          try {
+            const updatedAt = Date.now();
+            await persistConversation(
+              sessionId,
+              workspace.conversation,
+              updatedAt,
+            );
+            setSessions((items) =>
+              sortSessions(
+                items.map((item) =>
+                  item.id === sessionId
+                    ? {
+                        ...item,
+                        providerId:
+                          workspace.conversation.providerId ?? item.providerId,
+                        model: workspace.conversation.model,
+                        updatedAt,
+                      }
+                    : item,
+                ),
+              ),
+            );
+          } catch (caught) {
+            setSessionFeedback(sessionId, { error: errorMessage(caught) });
+          }
+        } catch (caught) {
+          const stopped = controller.signal.aborted || isAbortError(caught);
+          settleInterruptedEntries((update) =>
+            updateSessionConversation(sessionId, update),
+          );
+          updateSessionConversation(sessionId, (current) => ({
+            ...current,
+            runtimeState: cache.runtime.state,
+          }));
+          setSessionFeedback(sessionId, {
+            error: stopped ? null : errorMessage(caught),
+            status: {
+              key: stopped ? "status.stopped" : "status.analysisFailed",
+            },
+          });
+          await persistConversation(
+            sessionId,
+            workspace.conversation,
+            Date.now(),
+          ).catch(() => undefined);
+        } finally {
+          if (workspace.task === task) workspace.task = undefined;
+          setRunningSessionIds((current) => withoutSession(current, sessionId));
+        }
+      })();
+
+      return task.promise;
+    },
+    [setSessionFeedback, updateSessionConversation],
+  );
+
   const submit = useCallback(async () => {
     const question = draft.trim();
     const initial = conversationRef.current;
     const profile = getProviderProfile(settingsRef.current, initial.providerId);
+    const currentSessionId = activeSessionIdRef.current;
+    const currentWorkspace = currentSessionId
+      ? sessionWorkspacesRef.current.get(currentSessionId)
+      : undefined;
     if (
       !question ||
       !initial.demoPath ||
       !profile ||
       !isProviderReady(profile, initial.model) ||
-      sendingRef.current ||
+      pendingSessionRef.current ||
+      currentWorkspace?.task ||
       demoLoading
     ) {
       return;
     }
 
-    const revision = revisionRef.current;
     const turnId = createId("turn");
-    let sessionId = activeSessionIdRef.current;
     const userEntry: TimelineEntry = {
       id: `${turnId}:user`,
       kind: "user",
       content: question,
     };
-    mutateConversation((current) => ({
-      ...current,
-      entries: [...current.entries, userEntry],
-    }));
+    const startedConversation: ConversationState = {
+      ...initial,
+      entries: [...initial.entries, userEntry],
+    };
+    replaceConversation(startedConversation);
+    if (currentWorkspace) currentWorkspace.conversation = startedConversation;
     setDraft("");
     setError(null);
-    sendingRef.current = true;
-    setSending(true);
     setStatus({ key: "status.planning" });
 
-    try {
-      if (!sessionId) {
-        const created = await createStoredSession({
-          id: createId("session"),
-          title: titleFromPrompt(question),
-          demoPath: initial.demoPath,
-          providerId: profile.id,
-          model: initial.model,
-          createdAt: Date.now(),
-        });
-        if (revisionRef.current !== revision) return;
-        sessionId = created.id;
-        setActiveSessionId(sessionId);
-        setSessions((items) => sortSessions([created, ...items]));
-      }
+    if (currentSessionId && currentWorkspace) {
+      await runSessionTask(
+        currentSessionId,
+        currentWorkspace,
+        question,
+        turnId,
+        new AbortController(),
+      );
+      return;
+    }
 
-      const runtime = getRuntime(sessionId, conversationRef.current, settingsRef.current, runtimeRef);
-      await runtime.send(question, (event) => {
-        if (revisionRef.current === revision) {
-          applyAgentEvent(event, turnId, mutateConversation, setStatus);
-        }
+    const controller = new AbortController();
+    const originLoadId = loadRef.current;
+    pendingSessionRef.current = controller;
+    setNewSessionSending(true);
+    try {
+      const created = await createStoredSession({
+        id: createId("session"),
+        title: titleFromPrompt(question),
+        demoPath: initial.demoPath,
+        providerId: profile.id,
+        model: initial.model,
+        createdAt: Date.now(),
       });
-      if (revisionRef.current !== revision) return;
-      mutateConversation((current) => ({
-        ...current,
-        runtimeState: runtime.state,
-      }));
-      setStatus({ key: "status.complete" });
-      try {
-        await persistConversation(sessionId, conversationRef.current, Date.now());
-        const persisted = conversationRef.current;
-        setSessions((items) =>
-          sortSessions(
-            items.map((item) =>
-              item.id === sessionId
-                ? {
-                    ...item,
-                    providerId: persisted.providerId ?? item.providerId,
-                    model: persisted.model,
-                    updatedAt: Date.now(),
-                  }
-                : item,
-            ),
-          ),
-        );
-      } catch (caught) {
-        setError(errorMessage(caught));
+      const workspace: SessionWorkspace = {
+        conversation: startedConversation,
+        error: null,
+        status: { key: "status.planning" },
+      };
+      sessionWorkspacesRef.current.set(created.id, workspace);
+      setSessions((items) => sortSessions([created, ...items]));
+      if (
+        loadRef.current === originLoadId &&
+        activeSessionIdRef.current === null &&
+        pageRef.current === "conversation"
+      ) {
+        setActiveSessionId(created.id);
+        replaceConversation(workspace.conversation);
       }
+      pendingSessionRef.current = null;
+      setNewSessionSending(false);
+      await runSessionTask(
+        created.id,
+        workspace,
+        question,
+        turnId,
+        controller,
+      );
     } catch (caught) {
-      if (revisionRef.current === revision) {
-        settleInterruptedEntries(mutateConversation);
+      if (
+        loadRef.current === originLoadId &&
+        activeSessionIdRef.current === null &&
+        pageRef.current === "conversation"
+      ) {
+        settleInterruptedEntries((update) =>
+          replaceConversation(update(conversationRef.current)),
+        );
         setError(errorMessage(caught));
         setStatus({ key: "status.analysisFailed" });
-        if (sessionId) {
-          void persistConversation(sessionId, conversationRef.current, Date.now()).catch(
-            () => undefined,
-          );
-        }
       }
     } finally {
-      sendingRef.current = false;
-      if (revisionRef.current === revision) setSending(false);
+      if (pendingSessionRef.current === controller) {
+        pendingSessionRef.current = null;
+        setNewSessionSending(false);
+      }
     }
-  }, [demoLoading, draft, mutateConversation, setActiveSessionId]);
+  }, [
+    demoLoading,
+    draft,
+    replaceConversation,
+    runSessionTask,
+    setActiveSessionId,
+  ]);
 
   const profile = getProviderProfile(settings, conversation.providerId);
   const providerReady = isProviderReady(profile, conversation.model);
+  const sending = activeSessionId
+    ? runningSessionIds.has(activeSessionId)
+    : newSessionSending;
   const canSend =
     initialized &&
     !!conversation.demoPath &&
@@ -481,6 +726,7 @@ export function useWorkspace(initialLocale: Locale) {
     saveSettings,
     dismissSettingsSaveError: () => setSettingsSaveError(null),
     sessions,
+    runningSessionIds,
     activeSessionId,
     page,
     conversation,
@@ -495,7 +741,7 @@ export function useWorkspace(initialLocale: Locale) {
     canSend,
     modelOptions: createModelOptions(settings, conversation),
     setDraft,
-    setError,
+    setError: setActiveError,
     startNewSession,
     openSettings,
     openSession,
@@ -504,6 +750,7 @@ export function useWorkspace(initialLocale: Locale) {
     renameSession,
     deleteSession,
     submit,
+    stop: () => stopSession(),
   };
 }
 
@@ -540,11 +787,10 @@ function getRuntime(
   sessionId: string,
   conversation: ConversationState,
   settings: StoredSettings,
-  runtimeRef: MutableRefObject<RuntimeCache | null>,
-): AgentRuntime {
+  cached: RuntimeCache | undefined,
+): RuntimeCache {
   const profile = getProviderProfile(settings, conversation.providerId);
   if (!profile) throw new Error("The selected provider is no longer available");
-  const cached = runtimeRef.current;
   if (
     cached?.sessionId === sessionId &&
     cached.providerId === profile.id &&
@@ -552,7 +798,7 @@ function getRuntime(
     cached.baseUrl === profile.baseUrl &&
     cached.model === conversation.model
   ) {
-    return cached.runtime;
+    return cached;
   }
   const runtime = new AgentRuntime({
     adapter: createProviderAdapter(
@@ -565,7 +811,7 @@ function getRuntime(
     systemPrompt: `${systemPrompt}${HOST_SYSTEM_ADDENDUM}`,
     initialState: conversation.runtimeState,
   });
-  runtimeRef.current = {
+  return {
     sessionId,
     providerId: profile.id,
     providerKind: profile.kind,
@@ -573,7 +819,6 @@ function getRuntime(
     model: conversation.model,
     runtime,
   };
-  return runtime;
 }
 
 function applyAgentEvent(
@@ -666,14 +911,14 @@ function settleInterruptedEntries(
 ): void {
   mutate((current) => ({
     ...current,
-    entries: current.entries.map((entry) => {
+    entries: current.entries.flatMap((entry) => {
       if (entry.kind === "assistant" && entry.status === "streaming") {
-        return { ...entry, status: "complete" };
+        return entry.content ? [{ ...entry, status: "complete" }] : [];
       }
       if (entry.kind === "tool" && entry.status === "running") {
-        return { ...entry, status: "error" };
+        return [{ ...entry, status: "error" }];
       }
-      return entry;
+      return [entry];
     }),
   }));
 }
@@ -740,4 +985,18 @@ function createId(prefix: string): string {
   return random
     ? `${prefix}-${random}`
     : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function withSession(current: Set<string>, sessionId: string): Set<string> {
+  if (current.has(sessionId)) return current;
+  const next = new Set(current);
+  next.add(sessionId);
+  return next;
+}
+
+function withoutSession(current: Set<string>, sessionId: string): Set<string> {
+  if (!current.has(sessionId)) return current;
+  const next = new Set(current);
+  next.delete(sessionId);
+  return next;
 }

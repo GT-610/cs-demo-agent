@@ -11,6 +11,7 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  CircularProgress,
   IconButton,
   List,
   ListItemButton,
@@ -35,7 +36,7 @@ export function WorkspaceSidebar({
   sessions,
   activeSessionId,
   settingsActive,
-  busy,
+  runningSessionIds,
   onNewSession,
   onOpenSession,
   onOpenSettings,
@@ -47,7 +48,7 @@ export function WorkspaceSidebar({
   sessions: SessionSummary[];
   activeSessionId: string | null;
   settingsActive: boolean;
-  busy: boolean;
+  runningSessionIds: ReadonlySet<string>;
   onNewSession: () => void;
   onOpenSession: (id: string) => Promise<void>;
   onOpenSettings: () => void;
@@ -158,7 +159,6 @@ export function WorkspaceSidebar({
           fullWidth
           variant="text"
           startIcon={<AddRoundedIcon />}
-          disabled={busy}
           onClick={() => {
             onNewSession();
             onNavigate?.();
@@ -194,7 +194,6 @@ export function WorkspaceSidebar({
             <ListItemButton
               key={session.id}
               selected={session.id === activeSessionId && !settingsActive}
-              disabled={busy}
               onClick={() => {
                 void onOpenSession(session.id);
                 onNavigate?.();
@@ -214,6 +213,14 @@ export function WorkspaceSidebar({
                   {session.title}
                 </Typography>
               </Tooltip>
+              {runningSessionIds.has(session.id) && (
+                <CircularProgress
+                  size={13}
+                  thickness={4.5}
+                  aria-label={t("action.analyzing")}
+                  sx={{ mx: 0.5, flex: "0 0 auto" }}
+                />
+              )}
               <IconButton
                 size="small"
                 aria-label={t("sessions.actions")}
@@ -232,7 +239,6 @@ export function WorkspaceSidebar({
           fullWidth
           variant="text"
           startIcon={<SettingsOutlinedIcon />}
-          disabled={busy}
           onClick={() => {
             onOpenSettings();
             onNavigate?.();

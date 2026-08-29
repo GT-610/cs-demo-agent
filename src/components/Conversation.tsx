@@ -2,6 +2,7 @@ import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
+import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import TerminalRoundedIcon from "@mui/icons-material/TerminalRounded";
 import {
   Accordion,
@@ -55,6 +56,7 @@ export function Conversation({
   chooseDemo,
   selectModel,
   submit,
+  stop,
   t,
 }: {
   entries: TimelineEntry[];
@@ -73,6 +75,7 @@ export function Conversation({
   chooseDemo: () => Promise<void>;
   selectModel: (option: ModelOption) => Promise<void>;
   submit: () => Promise<void>;
+  stop: () => void;
   t: Translator;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -238,18 +241,19 @@ export function Conversation({
                   ))}
                 </Menu>
                 <IconButton
-                  type="submit"
-                  disabled={!canSend}
-                  aria-label={sending ? t("action.analyzing") : t("action.analyze")}
+                  type={sending ? "button" : "submit"}
+                  disabled={!sending && !canSend}
+                  aria-label={sending ? t("action.stop") : t("action.analyze")}
+                  onClick={sending ? stop : undefined}
                   sx={(theme) => ({
                     width: 31,
                     height: 31,
-                    color: canSend ? theme.palette.primary.contrastText : "#676d67",
-                    backgroundColor: canSend ? "primary.main" : alpha("#ffffff", 0.08),
+                    color: sending || canSend ? theme.palette.primary.contrastText : "#676d67",
+                    backgroundColor: sending || canSend ? "primary.main" : alpha("#ffffff", 0.08),
                     "&:hover": { backgroundColor: "primary.light" },
                   })}
                 >
-                  {sending ? <CircularProgress size={15} color="inherit" /> : <ArrowUpwardRoundedIcon sx={{ fontSize: 18 }} />}
+                  {sending ? <StopRoundedIcon sx={{ fontSize: 18 }} /> : <ArrowUpwardRoundedIcon sx={{ fontSize: 18 }} />}
                 </IconButton>
               </Stack>
             </Stack>
