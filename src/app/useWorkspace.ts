@@ -702,7 +702,7 @@ export function useWorkspace(initialLocale: Locale) {
       await runSessionTask(
         created.id,
         workspace,
-        settingsSnapshot,
+        settingsRef.current,
         question,
         turnId,
         controller,
