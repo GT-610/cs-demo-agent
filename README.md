@@ -1,26 +1,28 @@
 # CS Demo Agent
 
-CS Demo Agent is a local-first desktop application for analyzing Counter-Strike 2 demo files with an AI agent. It combines a native Rust demo parser with model tool calling, so answers can be traced back to the events, rounds, ticks, economy records, and grenade trajectories that produced them.
+<!-- Screenshot placeholder: add an application screenshot here. -->
+
+CS Demo Agent is a desktop application for exploring Counter-Strike 2 demo files locally. It combines a Rust demo parser with tool-calling models, so answers can be checked against the events, rounds, ticks, economy records, and grenade trajectories in the selected demo.
 
 ## What is included
 
 - A Tauri v2 desktop host with a React and TypeScript interface
 - Native `demoparser2`-based parsing for Source 2 `.dem` files
 - OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages adapters
-- Parallel tool execution with malformed-call recovery and an iteration limit
-- Markdown conversations and an expandable evidence trace for every tool call
+- Parallel tool execution; malformed calls become tool errors, and each turn has an iteration limit
+- Markdown conversations with an expandable evidence trace for each tool call
 - English and Simplified Chinese interface localization with system-language detection
 - Local file selection and native drag-and-drop
 - In-memory provider credentials and a constrained Rust HTTP transport
 
-## Use the application
+## Using the app
 
 1. Start the desktop application and choose or drop a Counter-Strike 2 `.dem` file.
 2. Select the provider protocol used by the configured endpoint.
 3. Enter the provider base URL, model name, and API key if the endpoint requires one.
-4. Ask a question about the match. The agent will query the local parser before making claims about demo data.
+4. Ask about the match. The model queries the local parser before it makes claims about demo data.
 
-Changing the demo, endpoint, protocol, model, or API key resets the active model conversation so provider continuation state cannot leak between configurations. The **Clear session** action resets the conversation and its evidence trace without unloading the demo.
+Changing the demo, endpoint, protocol, model, or API key resets the active model conversation, so provider continuation state does not cross configurations. The **Clear session** action resets the conversation and its evidence trace without unloading the demo.
 
 ## Provider configuration
 
@@ -30,22 +32,22 @@ Changing the demo, endpoint, protocol, model, or API key resets the active model
 | OpenAI Chat Completions | `https://api.openai.com/v1` | `/chat/completions` |
 | Anthropic Messages | `https://api.anthropic.com/v1` | `/messages` |
 
-OpenAI-compatible and Anthropic-compatible local or hosted endpoints can be used by changing the base URL. HTTP is accepted for local services; remote services should use HTTPS. API keys are optional for endpoints that do not require authentication.
+OpenAI-compatible and Anthropic-compatible local or hosted endpoints work by changing the base URL. HTTP is accepted for local services; remote services should use HTTPS. API keys are optional for endpoints that do not require authentication.
 
 The base URL may include `/v1` or the final endpoint path. The adapter normalizes either form without duplicating path segments.
 
 ## Demo analysis tools
 
-The model can use these host-controlled tools:
+The model can use these host-controlled tools.
 
-- `get_demo_header` — map, server, protocol, and demo format metadata
-- `get_player_info` — recorded roster and initial team numbers
-- `list_game_events` — event names that occur in the selected demo
-- `query_events` — filtered event queries with explicit player/global properties
-- `query_ticks` — specific or equidistantly sampled player-state ticks
-- `query_grenades` — grenade trajectory samples and optional global properties
-- `get_round_summary` — host-aggregated winners, reasons, kills, and economy evidence
-- `get_economy_analysis` — per-round team balances, equipment values, spending, and buy classification
+- `get_demo_header`: map, server, protocol, and demo format metadata
+- `get_player_info`: recorded roster and initial team numbers
+- `list_game_events`: event names that occur in the selected demo
+- `query_events`: filtered event queries with explicit player/global properties
+- `query_ticks`: specific or equidistantly sampled player-state ticks
+- `query_grenades`: grenade trajectory samples and optional global properties
+- `get_round_summary`: host-aggregated winners, reasons, kills, and economy evidence
+- `get_economy_analysis`: per-round team balances, equipment values, spending, and buy classification
 
 The model never supplies the file path. The desktop host validates the selected absolute `.dem` path and injects it after receiving a tool call. Event results are bounded at 50,000 rows and tick results at 10,000 rows. Sampled or truncated results are marked in tool metadata and shown in the evidence panel.
 
@@ -54,7 +56,7 @@ The model never supplies the file path. The desktop host validates the selected 
 - Raw demo bytes are memory-mapped and parsed locally. They are never uploaded to the model provider.
 - Only the JSON returned by model-selected parser tools is sent to the configured endpoint.
 - API keys remain in React memory for the current application process and are not written to local storage.
-- Provider requests pass through a Rust command that accepts only HTTP/HTTPS JSON POST requests, rejects credential-bearing URLs and transport-managed headers, disables redirects, applies timeouts, and limits request/response size.
+- Provider requests pass through a Rust command. It accepts HTTP/HTTPS JSON POST requests, rejects credential-bearing URLs and transport-managed headers, disables redirects, applies timeouts, and limits request and response sizes.
 - Player Steam IDs are used only to associate records inside the selected demo.
 
 ## Development
@@ -65,14 +67,14 @@ Prerequisites:
 - Rust stable
 - Windows MSVC build tools when building on Windows
 
-Install dependencies and run the desktop application:
+Install dependencies, then run the desktop application:
 
 ```powershell
 bun install
 bun run tauri dev
 ```
 
-Run the browser-only Vite interface for layout work:
+For browser-only layout work, run the Vite interface:
 
 ```powershell
 bun run dev
