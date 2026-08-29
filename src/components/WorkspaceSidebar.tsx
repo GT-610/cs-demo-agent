@@ -2,7 +2,6 @@ import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
-import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import {
   Box,
@@ -24,6 +23,7 @@ import {
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import { useRef, useState, type MouseEvent } from "react";
+import appIcon from "../../src-tauri/app-icon.svg";
 import type { SessionSummary } from "../bridge/persistence";
 import type { Translator } from "../i18n";
 
@@ -142,32 +142,17 @@ export function WorkspaceSidebar({
         backgroundColor: "#111311",
       }}
     >
-      <Stack direction="row" spacing={1.1} sx={{ px: 1.8, pt: 2, pb: 1.4, alignItems: "center" }}>
+      <Box sx={{ position: "relative", display: "flex", minHeight: 61, alignItems: "center", justifyContent: "center", px: 1.2 }}>
         <Box
-          aria-hidden="true"
-          sx={(theme) => ({
-            display: "grid",
-            width: 30,
-            height: 30,
-            flex: "0 0 auto",
-            placeItems: "center",
-            border: `1px solid ${alpha(theme.palette.primary.main, 0.32)}`,
-            borderRadius: 1.2,
-            color: "primary.main",
-            backgroundColor: alpha(theme.palette.primary.main, 0.08),
-          })}
-        >
-          <MyLocationOutlinedIcon sx={{ fontSize: 18 }} />
-        </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography noWrap sx={{ color: "#e5e8e5", fontSize: "0.82rem", fontWeight: 700 }}>
-            CS Demo Agent
-          </Typography>
-          <Typography noWrap variant="caption" sx={{ color: "#626862" }}>
-            {t("brand.tagline")}
-          </Typography>
-        </Box>
-      </Stack>
+          component="img"
+          src={appIcon}
+          alt=""
+          sx={{ position: "absolute", left: 12, width: 31, height: 31, borderRadius: 1.1 }}
+        />
+        <Typography noWrap sx={{ color: "#e5e8e5", fontSize: "0.82rem", fontWeight: 700 }}>
+          CS Demo Agent
+        </Typography>
+      </Box>
 
       <Box sx={{ px: 1.2, pb: 1.25 }}>
         <Button
