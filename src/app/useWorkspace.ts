@@ -105,7 +105,9 @@ export function useWorkspace(initialLocale: Locale) {
   const activeSessionIdRef = useRef<string | null>(null);
   const pageRef = useRef<WorkspacePage>("conversation");
   const sessionWorkspacesRef = useRef(new Map<string, SessionWorkspace>());
-  const loadRef = useRef(0);
+  const bootstrapLoadRef = useRef(0);
+  const navigationRef = useRef(0);
+  const demoLoadRef = useRef(0);
 
   const replaceConversation = useCallback((next: ConversationState) => {
     conversationRef.current = next;
@@ -211,7 +213,7 @@ export function useWorkspace(initialLocale: Locale) {
         setSettingsDirty(!settingsEqual(next, settingsDraftRef.current));
       }
       for (const workspace of sessionWorkspacesRef.current.values()) {
-        if (!workspace.task) workspace.runtime = undefined;
+        workspace.runtime = undefined;
       }
       setStatus({ key: "status.configurationChanged" });
     } catch (caught) {
@@ -224,10 +226,17 @@ export function useWorkspace(initialLocale: Locale) {
 
   useEffect(() => {
     let active = true;
-    const loadId = ++loadRef.current;
+    const loadId = ++bootstrapLoadRef.current;
+    const navigationId = navigationRef.current;
     void loadWorkspace()
       .then((snapshot) => {
-        if (!active || loadRef.current !== loadId) return;
+        if (
+          !active ||
+          bootstrapLoadRef.current !== loadId ||
+          navigationRef.current !== navigationId
+        ) {
+          return;
+        }
         const loadedSettings = normalizeSettings(snapshot.settings, initialLocale);
         settingsRef.current = loadedSettings;
         settingsDraftRef.current = loadedSettings;
@@ -237,15 +246,26 @@ export function useWorkspace(initialLocale: Locale) {
         replaceConversation(createEmptyConversation(loadedSettings));
       })
       .catch((caught) => {
-        if (active && loadRef.current === loadId) setError(errorMessage(caught));
+        if (
+          active &&
+          bootstrapLoadRef.current === loadId &&
+          navigationRef.current === navigationId
+        ) {
+          setError(errorMessage(caught));
+        }
       })
       .finally(() => {
-        if (active && loadRef.current === loadId) setInitialized(true);
+        if (active && bootstrapLoadRef.current === loadId) setInitialized(true);
       });
     return () => {
       active = false;
     };
   }, [initialLocale, replaceConversation]);
+
+  const cancelDemoLoad = useCallback(() => {
+    demoLoadRef.current += 1;
+    setDemoLoading(false);
+  }, []);
 
   useEffect(() => {
     if (activeSessionId !== null) return;
@@ -255,7 +275,8 @@ export function useWorkspace(initialLocale: Locale) {
   }, [activeSessionId, conversation.model, conversation.providerId, mutateConversation, settings]);
 
   const startNewSession = useCallback(() => {
-    loadRef.current += 1;
+    navigationRef.current += 1;
+    cancelDemoLoad();
     setSessionLoading(false);
     setActiveSessionId(null);
     replacePage("conversation");
@@ -263,19 +284,21 @@ export function useWorkspace(initialLocale: Locale) {
     setError(null);
     setStatus({ key: "status.readyDemo" });
     replaceConversation(createEmptyConversation(settingsRef.current));
-  }, [replaceConversation, replacePage, setActiveSessionId]);
+  }, [cancelDemoLoad, replaceConversation, replacePage, setActiveSessionId]);
 
   const openSettings = useCallback(() => {
-    loadRef.current += 1;
+    navigationRef.current += 1;
+    cancelDemoLoad();
     setSessionLoading(false);
     replacePage("settings");
-  }, [replacePage]);
+  }, [cancelDemoLoad, replacePage]);
 
   const openSession = useCallback(
     async (id: string) => {
       const cached = sessionWorkspacesRef.current.get(id);
       if (cached) {
-        loadRef.current += 1;
+        navigationRef.current += 1;
+        cancelDemoLoad();
         setSessionLoading(false);
         setActiveSessionId(id);
         replacePage("conversation");
@@ -285,7 +308,8 @@ export function useWorkspace(initialLocale: Locale) {
         setStatus(cached.status);
         return;
       }
-      const loadId = ++loadRef.current;
+      cancelDemoLoad();
+      const loadId = ++navigationRef.current;
       setSessionLoading(true);
       setError(null);
       setStatus({ key: "status.loadingSession" });
@@ -296,7 +320,7 @@ export function useWorkspace(initialLocale: Locale) {
           loadStoredSession(id),
           loadDemoOverview(summary.demoPath),
         ]);
-        if (loadRef.current !== loadId) return;
+        if (navigationRef.current !== loadId) return;
         const workspace: SessionWorkspace = {
           conversation: {
             demoPath: detail.demoPath,
@@ -317,27 +341,29 @@ export function useWorkspace(initialLocale: Locale) {
         replaceConversation(workspace.conversation);
         setStatus(workspace.status);
       } catch (caught) {
-        if (loadRef.current === loadId) {
+        if (navigationRef.current === loadId) {
           setError(errorMessage(caught));
           setStatus({ key: "status.openFailed" });
         }
       } finally {
-        if (loadRef.current === loadId) setSessionLoading(false);
+        if (navigationRef.current === loadId) setSessionLoading(false);
       }
     },
-    [replaceConversation, replacePage, sessions, setActiveSessionId],
+    [cancelDemoLoad, replaceConversation, replacePage, sessions, setActiveSessionId],
   );
 
   const openDemo = useCallback(
     async (path: string, forceNew = false) => {
       if (forceNew || activeSessionIdRef.current !== null) startNewSession();
-      const loadId = ++loadRef.current;
+      navigationRef.current += 1;
+      setSessionLoading(false);
+      const loadId = ++demoLoadRef.current;
       setDemoLoading(true);
       setError(null);
       setStatus({ key: "status.readingDemo" });
       try {
         const overview = await loadDemoOverview(path);
-        if (loadRef.current !== loadId) return;
+        if (demoLoadRef.current !== loadId) return;
         replaceConversation({
           ...createEmptyConversation(settingsRef.current),
           demoPath: path,
@@ -348,12 +374,12 @@ export function useWorkspace(initialLocale: Locale) {
         replacePage("conversation");
         setStatus({ key: "status.demoReady" });
       } catch (caught) {
-        if (loadRef.current === loadId) {
+        if (demoLoadRef.current === loadId) {
           setError(errorMessage(caught));
           setStatus({ key: "status.openFailed" });
         }
       } finally {
-        if (loadRef.current === loadId) setDemoLoading(false);
+        if (demoLoadRef.current === loadId) setDemoLoading(false);
       }
     },
     [replaceConversation, replacePage, setActiveSessionId, startNewSession],
@@ -463,7 +489,7 @@ export function useWorkspace(initialLocale: Locale) {
 
   const deleteSession = useCallback(
     async (id: string) => {
-      loadRef.current += 1;
+      navigationRef.current += 1;
       setSessionLoading(false);
       const workspace = sessionWorkspacesRef.current.get(id);
       if (workspace?.task) {
@@ -645,7 +671,7 @@ export function useWorkspace(initialLocale: Locale) {
     }
 
     const controller = new AbortController();
-    const originLoadId = loadRef.current;
+    const originLoadId = navigationRef.current;
     pendingSessionRef.current = controller;
     setNewSessionSending(true);
     try {
@@ -665,7 +691,7 @@ export function useWorkspace(initialLocale: Locale) {
       sessionWorkspacesRef.current.set(created.id, workspace);
       setSessions((items) => sortSessions([created, ...items]));
       if (
-        loadRef.current === originLoadId &&
+        navigationRef.current === originLoadId &&
         activeSessionIdRef.current === null &&
         pageRef.current === "conversation"
       ) {
@@ -683,7 +709,7 @@ export function useWorkspace(initialLocale: Locale) {
       );
     } catch (caught) {
       if (
-        loadRef.current === originLoadId &&
+        navigationRef.current === originLoadId &&
         activeSessionIdRef.current === null &&
         pageRef.current === "conversation"
       ) {
