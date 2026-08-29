@@ -33,6 +33,7 @@ pub fn run() {
             demo::get_round_summary,
             demo::get_economy_analysis,
             http::stream_http_json,
+            http::cancel_http_stream,
             persistence::load_workspace,
             persistence::load_session,
             persistence::save_provider_credentials,

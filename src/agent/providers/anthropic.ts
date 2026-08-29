@@ -205,6 +205,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           streamError = error instanceof Error ? error : new Error(String(error));
         }
       },
+      request.signal,
     );
     if (streamError) throw streamError;
     if (finalTurn) {

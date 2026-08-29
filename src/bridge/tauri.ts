@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { createAbortError, raceWithAbort, throwIfAborted } from "../agent/cancellation";
 import type {
   HttpStreamEvent,
   HttpStreamTransport,
@@ -50,7 +51,9 @@ export function createHttpStreamTransport(
   invokeCommand: InvokeFunction = invoke,
   createChannel: () => StreamChannel = () => new Channel<HttpStreamEvent>(),
 ): HttpStreamTransport {
-  return async (request, onData) => {
+  return async (request, onData, signal) => {
+    throwIfAborted(signal);
+    const requestId = createRequestId();
     let status = 0;
     let done = false;
     let handlerError: unknown;
@@ -61,6 +64,7 @@ export function createHttpStreamTransport(
     const onEvent = createChannel();
     onEvent.onmessage = (event) => {
       try {
+        if (signal?.aborted) return;
         if (event.type === "started") status = event.status;
         if (event.type === "data") onData(event.data);
         if (event.type === "done") {
@@ -71,7 +75,25 @@ export function createHttpStreamTransport(
         handlerError ??= error;
       }
     };
-    await invokeCommand<void>("stream_http_json", { request, onEvent });
+    const abort = () => {
+      void invokeCommand<void>("cancel_http_stream", { requestId }).catch(
+        () => undefined,
+      );
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await invokeCommand<void>("stream_http_json", {
+        requestId,
+        request,
+        onEvent,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw createAbortError();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+    throwIfAborted(signal);
     if (!done) await waitForStreamCompletion(doneEvent, () => status);
     if (handlerError) throw handlerError;
     if (!done || status < 200 || status >= 300) {
@@ -106,17 +128,26 @@ export function createDemoToolExecutor(
 ): ToolExecutor {
   const validatedPath = normalizeDemoPath(demoPath);
 
-  return async (name: string, input: JsonObject): Promise<JsonValue> => {
+  return async (
+    name: string,
+    input: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue> => {
+    throwIfAborted(signal);
     if (PATH_ONLY_TOOLS.has(name)) {
-      const result = await invokeCommand<DemoToolResult>(name, {
-        path: validatedPath,
-      });
+      const result = await raceWithAbort(
+        invokeCommand<DemoToolResult>(name, { path: validatedPath }),
+        signal,
+      );
       return result as unknown as JsonValue;
     }
     if (REQUEST_TOOLS.has(name)) {
-      const result = await invokeCommand<DemoToolResult>(name, {
-        request: { ...input, path: validatedPath },
-      });
+      const result = await raceWithAbort(
+        invokeCommand<DemoToolResult>(name, {
+          request: { ...input, path: validatedPath },
+        }),
+        signal,
+      );
       return result as unknown as JsonValue;
     }
     throw new Error(`Unknown demo tool: ${name}`);
@@ -169,4 +200,9 @@ export function normalizeDemoPath(path: string): string {
     throw new Error("Select a .dem Counter-Strike demo file");
   }
   return normalized;
+}
+
+function createRequestId(): string {
+  return globalThis.crypto?.randomUUID?.() ??
+    `http-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

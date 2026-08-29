@@ -33,14 +33,12 @@ export function App() {
         (workspace.conversation.demoPath
           ? fileName(workspace.conversation.demoPath)
           : t("sessions.new"));
-  const busy = workspace.sending || workspace.sessionLoading || workspace.demoLoading;
-
   const sidebar = (
     <WorkspaceSidebar
       sessions={workspace.sessions}
       activeSessionId={workspace.activeSessionId}
       settingsActive={workspace.page === "settings"}
-      busy={busy}
+      runningSessionIds={workspace.runningSessionIds}
       onNewSession={workspace.startNewSession}
       onOpenSession={workspace.openSession}
       onOpenSettings={workspace.openSettings}
@@ -111,7 +109,7 @@ export function App() {
         </Box>
       ) : (
         <>
-          <Box sx={{ gridColumn: { xs: 1, md: 2 }, gridRow: 2, minWidth: 0, minHeight: 0 }}>
+          <Box sx={{ gridColumn: { xs: 1, md: 2 }, gridRow: 2, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
             <Conversation
               entries={workspace.conversation.entries}
               draft={workspace.draft}
@@ -129,6 +127,7 @@ export function App() {
               chooseDemo={workspace.chooseDemo}
               selectModel={workspace.selectModel}
               submit={workspace.submit}
+              stop={workspace.stop}
               t={t}
             />
           </Box>

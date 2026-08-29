@@ -2,6 +2,7 @@ import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
+import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import TerminalRoundedIcon from "@mui/icons-material/TerminalRounded";
 import {
   Accordion,
@@ -55,6 +56,7 @@ export function Conversation({
   chooseDemo,
   selectModel,
   submit,
+  stop,
   t,
 }: {
   entries: TimelineEntry[];
@@ -73,6 +75,7 @@ export function Conversation({
   chooseDemo: () => Promise<void>;
   selectModel: (option: ModelOption) => Promise<void>;
   submit: () => Promise<void>;
+  stop: () => void;
   t: Translator;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -98,14 +101,24 @@ export function Conversation({
     <Box
       component="main"
       aria-label={t("chat.ariaLabel")}
-      sx={{ display: "grid", minWidth: 0, minHeight: 0, gridTemplateRows: "minmax(0, 1fr) auto" }}
+      sx={{ display: "grid", width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
       <Box
         ref={scrollRef}
         aria-live="polite"
         sx={{ minHeight: 0, overflow: "auto", scrollBehavior: "smooth", scrollbarColor: "#343834 transparent" }}
       >
-        <Box sx={{ width: "min(790px, calc(100% - 36px))", minHeight: "100%", mx: "auto", py: 3.5 }}>
+        <Box
+          sx={{
+            display: entries.length === 0 ? "flex" : "block",
+            boxSizing: "border-box",
+            width: "min(790px, calc(100% - 36px))",
+            minHeight: "100%",
+            height: entries.length === 0 ? "100%" : undefined,
+            mx: "auto",
+            py: 3.5,
+          }}
+        >
           {entries.length === 0 ? (
             <EmptyConversation
               hasDemo={!!demoPath}
@@ -238,18 +251,19 @@ export function Conversation({
                   ))}
                 </Menu>
                 <IconButton
-                  type="submit"
-                  disabled={!canSend}
-                  aria-label={sending ? t("action.analyzing") : t("action.analyze")}
+                  type={sending ? "button" : "submit"}
+                  disabled={!sending && !canSend}
+                  aria-label={sending ? t("action.stop") : t("action.analyze")}
+                  onClick={sending ? stop : undefined}
                   sx={(theme) => ({
                     width: 31,
                     height: 31,
-                    color: canSend ? theme.palette.primary.contrastText : "#676d67",
-                    backgroundColor: canSend ? "primary.main" : alpha("#ffffff", 0.08),
+                    color: sending || canSend ? theme.palette.primary.contrastText : "#676d67",
+                    backgroundColor: sending || canSend ? "primary.main" : alpha("#ffffff", 0.08),
                     "&:hover": { backgroundColor: "primary.light" },
                   })}
                 >
-                  {sending ? <CircularProgress size={15} color="inherit" /> : <ArrowUpwardRoundedIcon sx={{ fontSize: 18 }} />}
+                  {sending ? <StopRoundedIcon sx={{ fontSize: 18 }} /> : <ArrowUpwardRoundedIcon sx={{ fontSize: 18 }} />}
                 </IconButton>
               </Stack>
             </Stack>
@@ -298,7 +312,12 @@ function TimelineItem({ entry, t }: { entry: TimelineEntry; t: Translator }) {
             {entry.content}
           </ReactMarkdown>
         ) : (
-          <Box className="thinking-bars" aria-label={t("chat.working")}><span /><span /><span /></Box>
+          <Stack direction="row" spacing={0.9} aria-label={t("chat.working")} sx={{ minHeight: 31, alignItems: "center" }}>
+            <CircularProgress size={14} thickness={4.2} />
+            <Typography sx={{ color: "#8f988f", fontSize: "0.68rem" }}>
+              {t("chat.working")}
+            </Typography>
+          </Stack>
         )}
         {entry.status === "streaming" && entry.content && <span className="streaming-cursor" aria-hidden="true" />}
       </Box>
@@ -357,7 +376,7 @@ function EmptyConversation({
   const title = !hasDemo ? t("empty.loadTitle") : !providerReady ? t("empty.providerTitle") : t("empty.readyTitle");
   const detail = !hasDemo ? t("empty.loadDetail") : !providerReady ? t("empty.providerDetail") : t("empty.readyDetail");
   return (
-    <Stack sx={{ minHeight: "calc(100vh - 245px)", textAlign: "center", alignItems: "center", justifyContent: "center" }}>
+    <Stack sx={{ width: "100%", flex: 1, textAlign: "center", alignItems: "center", justifyContent: "center" }}>
       <Box className="radar-graphic" aria-hidden="true"><span /><span /><MyLocationOutlinedIcon /></Box>
       <Typography variant="overline">{t("empty.kicker")}</Typography>
       <Typography component="h2" sx={{ mt: 1, color: "#dfe3df", fontSize: "1.08rem", fontWeight: 650 }}>

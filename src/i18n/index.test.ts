@@ -11,6 +11,8 @@ describe("localization", () => {
   test("returns English and Simplified Chinese resources", () => {
     expect(translate("en", "action.analyze")).toBe("Analyze");
     expect(translate("zh-CN", "action.analyze")).toBe("开始分析");
+    expect(translate("en", "roster.teamA")).toBe("Team A");
+    expect(translate("zh-CN", "roster.teamB")).toBe("B 队");
   });
 
   test("interpolates status values", () => {

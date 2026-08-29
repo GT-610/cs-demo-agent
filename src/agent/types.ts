@@ -75,6 +75,7 @@ export interface ProviderRequest {
   messages: AgentMessage[];
   tools: ToolSpec[];
   continuation?: ProviderContinuation;
+  signal?: AbortSignal;
 }
 
 export interface ResponsesContinuation {
@@ -118,6 +119,7 @@ export interface HttpStreamResponse {
 export type HttpStreamTransport = (
   request: HttpJsonRequest,
   onData: (data: JsonValue) => void,
+  signal?: AbortSignal,
 ) => Promise<HttpStreamResponse>;
 
 export interface ProviderAdapter {
@@ -130,6 +132,7 @@ export interface ProviderAdapter {
 export type ToolExecutor = (
   name: string,
   input: JsonObject,
+  signal?: AbortSignal,
 ) => Promise<JsonValue>;
 
 export type AgentEvent =

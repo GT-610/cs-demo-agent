@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
@@ -8,6 +12,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{ipc::Channel, State};
+use tokio::sync::watch;
 
 use crate::error::{AppError, AppResult};
 
@@ -16,9 +21,43 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HEADERS: usize = 32;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const ERROR_PREVIEW_CHARS: usize = 2_000;
+const MAX_REQUEST_ID_BYTES: usize = 128;
+const MAX_PENDING_CANCELLATIONS: usize = 256;
+const PENDING_CANCELLATION_TTL: Duration = Duration::from_secs(30);
 
 pub struct HttpState {
     client: Client,
+    cancellations: Mutex<CancellationState>,
+}
+
+#[derive(Default)]
+struct CancellationState {
+    active: HashMap<String, watch::Sender<bool>>,
+    pending: HashMap<String, Instant>,
+}
+
+impl CancellationState {
+    fn prune_pending(&mut self, now: Instant) {
+        self.pending.retain(|_, created_at| {
+            now.checked_duration_since(*created_at)
+                .is_none_or(|elapsed| elapsed <= PENDING_CANCELLATION_TTL)
+        });
+        if self.pending.len() <= MAX_PENDING_CANCELLATIONS {
+            return;
+        }
+        let mut pending: Vec<(String, Instant)> = self
+            .pending
+            .iter()
+            .map(|(request_id, created_at)| (request_id.clone(), *created_at))
+            .collect();
+        pending.sort_by_key(|(_, created_at)| *created_at);
+        for (request_id, _) in pending
+            .into_iter()
+            .take(self.pending.len() - MAX_PENDING_CANCELLATIONS)
+        {
+            self.pending.remove(&request_id);
+        }
+    }
 }
 
 impl HttpState {
@@ -27,7 +66,50 @@ impl HttpState {
             .redirect(Policy::none())
             .build()
             .map_err(|error| AppError::Provider(error.to_string()))?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            cancellations: Mutex::new(CancellationState::default()),
+        })
+    }
+
+    fn register(&self, request_id: &str) -> AppResult<watch::Receiver<bool>> {
+        validate_request_id(request_id)?;
+        let mut cancellations = self.cancellations.lock().map_err(|_| {
+            AppError::Provider("HTTP cancellation state is unavailable".to_string())
+        })?;
+        cancellations.prune_pending(Instant::now());
+        if cancellations.active.contains_key(request_id) {
+            return Err(AppError::InvalidInput(
+                "provider request ID is already active".to_string(),
+            ));
+        }
+        let cancelled = cancellations.pending.remove(request_id).is_some();
+        let (sender, receiver) = watch::channel(cancelled);
+        cancellations.active.insert(request_id.to_string(), sender);
+        Ok(receiver)
+    }
+
+    fn unregister(&self, request_id: &str) {
+        if let Ok(mut cancellations) = self.cancellations.lock() {
+            cancellations.active.remove(request_id);
+            cancellations.pending.remove(request_id);
+        }
+    }
+
+    fn cancel(&self, request_id: &str) -> AppResult<()> {
+        validate_request_id(request_id)?;
+        let mut cancellations = self.cancellations.lock().map_err(|_| {
+            AppError::Provider("HTTP cancellation state is unavailable".to_string())
+        })?;
+        let now = Instant::now();
+        cancellations.prune_pending(now);
+        if let Some(sender) = cancellations.active.get(request_id) {
+            let _ = sender.send(true);
+        } else {
+            cancellations.pending.insert(request_id.to_string(), now);
+            cancellations.prune_pending(now);
+        }
+        Ok(())
     }
 }
 
@@ -51,36 +133,50 @@ pub enum HttpStreamEvent {
 #[tauri::command]
 pub async fn stream_http_json(
     state: State<'_, HttpState>,
+    request_id: String,
     request: HttpJsonRequest,
     on_event: Channel<HttpStreamEvent>,
 ) -> Result<(), String> {
-    stream_http_json_inner(&state.client, request, &on_event)
+    let mut cancellation = state
+        .register(&request_id)
+        .map_err(|error| error.to_string())?;
+    let result = stream_http_json_inner(&state.client, request, &on_event, &mut cancellation)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    state.unregister(&request_id);
+    result
+}
+
+#[tauri::command]
+pub fn cancel_http_stream(state: State<'_, HttpState>, request_id: String) -> Result<(), String> {
+    state.cancel(&request_id).map_err(|error| error.to_string())
 }
 
 async fn stream_http_json_inner(
     client: &Client,
     request: HttpJsonRequest,
     on_event: &Channel<HttpStreamEvent>,
+    cancellation: &mut watch::Receiver<bool>,
 ) -> AppResult<()> {
     let url = validate_url(&request.url)?;
     let headers = validate_headers(request.headers)?;
     let request_bytes = serialize_request_body(&request.body)?;
     let timeout_ms = request.timeout_ms.clamp(1_000, 180_000);
-    let mut response = client
+    let request = client
         .post(url)
         .headers(headers)
         .body(request_bytes)
         .timeout(Duration::from_millis(timeout_ms))
-        .send()
-        .await
-        .map_err(|error| AppError::Provider(error.to_string()))?;
+        .send();
+    let mut response = tokio::select! {
+        result = request => result.map_err(|error| AppError::Provider(error.to_string()))?,
+        _ = wait_for_cancellation(cancellation) => return Err(request_cancelled()),
+    };
     let status = response.status();
     validate_content_length(response.content_length())?;
 
     if !status.is_success() {
-        let bytes = read_response_bytes(&mut response).await?;
+        let bytes = read_response_bytes(&mut response, cancellation).await?;
         return Err(provider_status_error(status, &bytes));
     }
 
@@ -98,11 +194,7 @@ async fn stream_http_json_inner(
 
     if is_event_stream {
         let mut decoder = SseDecoder::default();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| AppError::Provider(error.to_string()))?
-        {
+        while let Some(chunk) = next_response_chunk(&mut response, cancellation).await? {
             for data in decoder.push(&chunk)? {
                 send_stream_event(on_event, HttpStreamEvent::Data { data })?;
             }
@@ -111,7 +203,7 @@ async fn stream_http_json_inner(
             send_stream_event(on_event, HttpStreamEvent::Data { data })?;
         }
     } else {
-        let bytes = read_response_bytes(&mut response).await?;
+        let bytes = read_response_bytes(&mut response, cancellation).await?;
         let data = parse_response_body(status, &bytes)?;
         send_stream_event(on_event, HttpStreamEvent::Data { data })?;
     }
@@ -130,20 +222,58 @@ fn serialize_request_body(body: &Value) -> AppResult<Vec<u8>> {
     Ok(request_bytes)
 }
 
-async fn read_response_bytes(response: &mut reqwest::Response) -> AppResult<Vec<u8>> {
+async fn read_response_bytes(
+    response: &mut reqwest::Response,
+    cancellation: &mut watch::Receiver<bool>,
+) -> AppResult<Vec<u8>> {
     let capacity = response
         .content_length()
         .unwrap_or_default()
         .min(MAX_RESPONSE_BYTES as u64) as usize;
     let mut bytes = Vec::with_capacity(capacity);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| AppError::Provider(error.to_string()))?
-    {
+    while let Some(chunk) = next_response_chunk(response, cancellation).await? {
         append_response_chunk(&mut bytes, &chunk)?;
     }
     Ok(bytes)
+}
+
+async fn next_response_chunk(
+    response: &mut reqwest::Response,
+    cancellation: &mut watch::Receiver<bool>,
+) -> AppResult<Option<Vec<u8>>> {
+    if *cancellation.borrow() {
+        return Err(request_cancelled());
+    }
+    tokio::select! {
+        result = response.chunk() => result
+            .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+            .map_err(|error| AppError::Provider(error.to_string())),
+        _ = wait_for_cancellation(cancellation) => Err(request_cancelled()),
+    }
+}
+
+async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
+    if *cancellation.borrow() {
+        return;
+    }
+    while cancellation.changed().await.is_ok() {
+        if *cancellation.borrow() {
+            return;
+        }
+    }
+}
+
+fn request_cancelled() -> AppError {
+    AppError::Provider("request stopped".to_string())
+}
+
+fn validate_request_id(request_id: &str) -> AppResult<()> {
+    if request_id.is_empty() || request_id.len() > MAX_REQUEST_ID_BYTES {
+        return Err(AppError::InvalidInput(
+            "provider request ID is invalid".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn provider_status_error(status: StatusCode, bytes: &[u8]) -> AppError {
@@ -439,5 +569,57 @@ mod tests {
             ..SseDecoder::default()
         };
         assert!(decoder.push(&[0]).is_err());
+    }
+
+    #[test]
+    fn cancellation_handles_active_and_early_requests() {
+        let state = HttpState::new().expect("create HTTP state");
+
+        state.cancel("before-start").expect("queue cancellation");
+        let early = state.register("before-start").expect("register request");
+        assert!(*early.borrow());
+        state.unregister("before-start");
+
+        let active = state.register("active-request").expect("register request");
+        assert!(!*active.borrow());
+        state.cancel("active-request").expect("cancel request");
+        assert!(*active.borrow());
+        state.unregister("active-request");
+    }
+
+    #[test]
+    fn pending_cancellations_are_expired_and_bounded() {
+        let state = HttpState::new().expect("create HTTP state");
+        {
+            let mut cancellations = state.cancellations.lock().expect("lock state");
+            cancellations.pending.insert(
+                "stale".to_string(),
+                Instant::now() - PENDING_CANCELLATION_TTL - Duration::from_secs(1),
+            );
+        }
+        let receiver = state.register("fresh").expect("register fresh request");
+        assert!(!*receiver.borrow());
+        state.unregister("fresh");
+        assert!(!state
+            .cancellations
+            .lock()
+            .expect("lock state")
+            .pending
+            .contains_key("stale"));
+
+        for index in 0..=MAX_PENDING_CANCELLATIONS {
+            state
+                .cancel(&format!("pending-{index}"))
+                .expect("queue cancellation");
+        }
+        assert!(
+            state
+                .cancellations
+                .lock()
+                .expect("lock state")
+                .pending
+                .len()
+                <= MAX_PENDING_CANCELLATIONS
+        );
     }
 }

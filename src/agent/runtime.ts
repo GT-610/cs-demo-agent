@@ -14,6 +14,7 @@ import type {
   ToolMessage,
   ToolSpec,
 } from "./types";
+import { isAbortError, throwIfAborted } from "./cancellation";
 
 export interface AgentRuntimeOptions {
   adapter: ProviderAdapter;
@@ -83,6 +84,7 @@ export class AgentRuntime {
   async send(
     userText: string,
     onEvent: AgentEventHandler = () => undefined,
+    signal?: AbortSignal,
   ): Promise<AgentReply> {
     if (this.inFlight) {
       throw new Error("An agent request is already in progress");
@@ -95,21 +97,31 @@ export class AgentRuntime {
 
     const messageCount = this.messages.length;
     const previousContinuation = this.continuation;
+    let partialText = "";
     this.inFlight = true;
 
     try {
+      throwIfAborted(signal);
       this.messages.push({ role: "user", content: text });
       for (let iteration = 1; iteration <= this.maxIterations; iteration += 1) {
+        throwIfAborted(signal);
         onEvent({ type: "assistant-start", iteration });
+        partialText = "";
         const turn = await this.adapter.generate(
           {
             config: this.config,
             messages: cloneMessages(this.messages),
             tools: this.tools,
             continuation: cloneContinuation(this.continuation),
+            signal,
           },
-          (delta) => onEvent({ type: "assistant-delta", delta, iteration }),
+          (delta) => {
+            throwIfAborted(signal);
+            partialText += delta;
+            onEvent({ type: "assistant-delta", delta, iteration });
+          },
         );
+        throwIfAborted(signal);
         this.continuation = turn.continuation;
 
         const assistantMessage: AssistantMessage = {
@@ -118,6 +130,7 @@ export class AgentRuntime {
           toolCalls: turn.toolCalls,
         };
         this.messages.push(assistantMessage);
+        partialText = "";
         onEvent({
           type: "assistant-end",
           text: turn.text,
@@ -132,7 +145,7 @@ export class AgentRuntime {
         const results = await Promise.all(
           turn.toolCalls.map(async (call) => {
             onEvent({ type: "tool-start", call, iteration });
-            const executed = await this.executeCall(call);
+            const executed = await this.executeCall(call, signal);
             onEvent({
               type: "tool-result",
               call,
@@ -150,13 +163,40 @@ export class AgentRuntime {
         `Agent stopped after ${this.maxIterations} tool iterations without a final answer`,
       );
     } catch (error) {
-      this.messages.length = messageCount;
-      this.continuation = previousContinuation;
+      const aborted = signal?.aborted || isAbortError(error);
+      if (aborted) {
+        const lastMessage = this.messages.at(-1);
+        if (lastMessage?.role === "assistant" && lastMessage.toolCalls.length > 0) {
+          this.messages.push(
+            ...lastMessage.toolCalls.map((call): ToolMessage => ({
+              role: "tool",
+              toolCallId: call.id,
+              name: call.name,
+              content: JSON.stringify({
+                error: "Tool execution was stopped",
+                tool: call.name,
+              }),
+            })),
+          );
+        }
+        if (partialText) {
+          this.messages.push({
+            role: "assistant",
+            content: partialText,
+            toolCalls: [],
+          });
+        }
+      } else {
+        this.messages.length = messageCount;
+        this.continuation = previousContinuation;
+      }
       const message = error instanceof Error ? error.message : String(error);
-      try {
-        onEvent({ type: "error", message });
-      } catch {
-        // Preserve the error that caused the turn to roll back.
+      if (!aborted) {
+        try {
+          onEvent({ type: "error", message });
+        } catch {
+          // Preserve the error that caused the turn to roll back.
+        }
       }
       throw error;
     } finally {
@@ -164,14 +204,18 @@ export class AgentRuntime {
     }
   }
 
-  private async executeCall(call: ToolCall): Promise<ExecutedTool> {
+  private async executeCall(
+    call: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<ExecutedTool> {
     try {
+      throwIfAborted(signal);
       const parsed = JSON.parse(call.arguments) as JsonValue;
       if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
         throw new Error("Tool arguments must be a JSON object");
       }
       const input = removeNullValues(parsed);
-      const result = await this.executeTool(call.name, input);
+      const result = await this.executeTool(call.name, input, signal);
       return {
         ok: true,
         result,
@@ -183,6 +227,7 @@ export class AgentRuntime {
         },
       };
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) throw error;
       const result: JsonObject = {
         error: error instanceof Error ? error.message : String(error),
         tool: call.name,
