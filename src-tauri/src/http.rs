@@ -1,7 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Mutex,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use reqwest::{
@@ -22,6 +22,8 @@ const MAX_HEADERS: usize = 32;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const ERROR_PREVIEW_CHARS: usize = 2_000;
 const MAX_REQUEST_ID_BYTES: usize = 128;
+const MAX_PENDING_CANCELLATIONS: usize = 256;
+const PENDING_CANCELLATION_TTL: Duration = Duration::from_secs(30);
 
 pub struct HttpState {
     client: Client,
@@ -31,7 +33,31 @@ pub struct HttpState {
 #[derive(Default)]
 struct CancellationState {
     active: HashMap<String, watch::Sender<bool>>,
-    pending: HashSet<String>,
+    pending: HashMap<String, Instant>,
+}
+
+impl CancellationState {
+    fn prune_pending(&mut self, now: Instant) {
+        self.pending.retain(|_, created_at| {
+            now.checked_duration_since(*created_at)
+                .is_none_or(|elapsed| elapsed <= PENDING_CANCELLATION_TTL)
+        });
+        if self.pending.len() <= MAX_PENDING_CANCELLATIONS {
+            return;
+        }
+        let mut pending: Vec<(String, Instant)> = self
+            .pending
+            .iter()
+            .map(|(request_id, created_at)| (request_id.clone(), *created_at))
+            .collect();
+        pending.sort_by_key(|(_, created_at)| *created_at);
+        for (request_id, _) in pending
+            .into_iter()
+            .take(self.pending.len() - MAX_PENDING_CANCELLATIONS)
+        {
+            self.pending.remove(&request_id);
+        }
+    }
 }
 
 impl HttpState {
@@ -51,12 +77,13 @@ impl HttpState {
         let mut cancellations = self.cancellations.lock().map_err(|_| {
             AppError::Provider("HTTP cancellation state is unavailable".to_string())
         })?;
+        cancellations.prune_pending(Instant::now());
         if cancellations.active.contains_key(request_id) {
             return Err(AppError::InvalidInput(
                 "provider request ID is already active".to_string(),
             ));
         }
-        let cancelled = cancellations.pending.remove(request_id);
+        let cancelled = cancellations.pending.remove(request_id).is_some();
         let (sender, receiver) = watch::channel(cancelled);
         cancellations.active.insert(request_id.to_string(), sender);
         Ok(receiver)
@@ -74,10 +101,13 @@ impl HttpState {
         let mut cancellations = self.cancellations.lock().map_err(|_| {
             AppError::Provider("HTTP cancellation state is unavailable".to_string())
         })?;
+        let now = Instant::now();
+        cancellations.prune_pending(now);
         if let Some(sender) = cancellations.active.get(request_id) {
             let _ = sender.send(true);
         } else {
-            cancellations.pending.insert(request_id.to_string());
+            cancellations.pending.insert(request_id.to_string(), now);
+            cancellations.prune_pending(now);
         }
         Ok(())
     }
@@ -555,5 +585,41 @@ mod tests {
         state.cancel("active-request").expect("cancel request");
         assert!(*active.borrow());
         state.unregister("active-request");
+    }
+
+    #[test]
+    fn pending_cancellations_are_expired_and_bounded() {
+        let state = HttpState::new().expect("create HTTP state");
+        {
+            let mut cancellations = state.cancellations.lock().expect("lock state");
+            cancellations.pending.insert(
+                "stale".to_string(),
+                Instant::now() - PENDING_CANCELLATION_TTL - Duration::from_secs(1),
+            );
+        }
+        let receiver = state.register("fresh").expect("register fresh request");
+        assert!(!*receiver.borrow());
+        state.unregister("fresh");
+        assert!(!state
+            .cancellations
+            .lock()
+            .expect("lock state")
+            .pending
+            .contains_key("stale"));
+
+        for index in 0..=MAX_PENDING_CANCELLATIONS {
+            state
+                .cancel(&format!("pending-{index}"))
+                .expect("queue cancellation");
+        }
+        assert!(
+            state
+                .cancellations
+                .lock()
+                .expect("lock state")
+                .pending
+                .len()
+                <= MAX_PENDING_CANCELLATIONS
+        );
     }
 }

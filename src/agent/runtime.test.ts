@@ -401,4 +401,34 @@ describe("AgentRuntime", () => {
       text: "continued",
     });
   });
+
+  test("records a resolved tool result when cancellation arrives afterward", async () => {
+    const controller = new AbortController();
+    const runtime = new AgentRuntime({
+      adapter: new SequenceAdapter([
+        {
+          text: "",
+          toolCalls: [
+            { id: "call-resolved", name: "get_demo_header", arguments: "{}" },
+          ],
+        },
+      ]),
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => {
+        controller.abort();
+        return { data: { map_name: "de_nuke" }, meta: {} };
+      },
+    });
+
+    await expect(runtime.send("stop after result", () => undefined, controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(runtime.history.at(-1)).toEqual({
+      role: "tool",
+      toolCallId: "call-resolved",
+      name: "get_demo_header",
+      content: '{"data":{"map_name":"de_nuke"},"meta":{}}',
+    });
+  });
 });

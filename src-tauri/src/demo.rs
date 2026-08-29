@@ -378,6 +378,7 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
     }
 
     let mut initial_team_by_final_side = HashMap::new();
+    let mut final_side_by_initial_team = HashMap::new();
     let mut ambiguous_final_sides = HashSet::new();
     for fallback in fallback_players {
         let Some(steamid) = value_as_string(fallback.get("steamid")) else {
@@ -392,13 +393,22 @@ fn build_initial_player_info(events: &[Value], fallback_players: &[Value]) -> Ve
         if ambiguous_final_sides.contains(&final_side) {
             continue;
         }
-        if let Some(existing_team) = initial_team_by_final_side.get(&final_side) {
-            if *existing_team != initial_team {
+        if let Some(existing_team) = initial_team_by_final_side.get(&final_side).copied() {
+            if existing_team != initial_team {
                 initial_team_by_final_side.remove(&final_side);
+                final_side_by_initial_team.remove(&existing_team);
+                ambiguous_final_sides.insert(final_side);
+            }
+        } else if let Some(existing_side) = final_side_by_initial_team.get(&initial_team).copied() {
+            if existing_side != final_side {
+                initial_team_by_final_side.remove(&existing_side);
+                final_side_by_initial_team.remove(&initial_team);
+                ambiguous_final_sides.insert(existing_side);
                 ambiguous_final_sides.insert(final_side);
             }
         } else {
             initial_team_by_final_side.insert(final_side, initial_team);
+            final_side_by_initial_team.insert(initial_team, final_side);
         }
     }
 
@@ -1296,6 +1306,47 @@ mod tests {
 
         assert!(players[0]["team_number"].is_null());
         assert!(players[0]["stable_team"].is_null());
+    }
+
+    #[test]
+    fn player_info_rejects_inverse_final_side_mappings() {
+        let events = vec![
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Alpha",
+                "user_steamid": "1",
+                "user_team_num": 3,
+            }),
+            json!({
+                "event_name": "player_spawn",
+                "tick": 100,
+                "is_warmup_period": false,
+                "user_name": "Bravo",
+                "user_steamid": "2",
+                "user_team_num": 3,
+            }),
+        ];
+        let fallback = vec![
+            json!({ "name": "Alpha", "steamid": "1", "team_number": 2 }),
+            json!({ "name": "Bravo", "steamid": "2", "team_number": 3 }),
+            json!({ "name": "Unknown T", "steamid": "3", "team_number": 2 }),
+            json!({ "name": "Unknown CT", "steamid": "4", "team_number": 3 }),
+        ];
+
+        let players = build_initial_player_info(&events, &fallback);
+
+        let unknown_t = players
+            .iter()
+            .find(|player| player["name"] == json!("Unknown T"))
+            .expect("unknown T player should be present");
+        let unknown_ct = players
+            .iter()
+            .find(|player| player["name"] == json!("Unknown CT"))
+            .expect("unknown CT player should be present");
+        assert!(unknown_t["stable_team"].is_null());
+        assert!(unknown_ct["stable_team"].is_null());
     }
 
     #[test]

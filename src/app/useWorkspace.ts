@@ -447,7 +447,10 @@ export function useWorkspace(initialLocale: Locale) {
   const stopSession = useCallback(
     (id: string | null = activeSessionIdRef.current) => {
       if (!id) {
-        pendingSessionRef.current?.abort();
+        const pending = pendingSessionRef.current;
+        if (!pending || pending.signal.aborted) return;
+        setStatus({ key: "status.stopping" });
+        pending.abort();
         return;
       }
       const task = sessionWorkspacesRef.current.get(id)?.task;

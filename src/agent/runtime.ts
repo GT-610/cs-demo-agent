@@ -216,7 +216,6 @@ export class AgentRuntime {
       }
       const input = removeNullValues(parsed);
       const result = await this.executeTool(call.name, input, signal);
-      throwIfAborted(signal);
       return {
         ok: true,
         result,
