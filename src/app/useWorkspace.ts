@@ -108,6 +108,7 @@ export function useWorkspace(initialLocale: Locale) {
   const bootstrapLoadRef = useRef(0);
   const navigationRef = useRef(0);
   const demoLoadRef = useRef(0);
+  const deletingSessionIdsRef = useRef(new Set<string>());
 
   const replaceConversation = useCallback((next: ConversationState) => {
     conversationRef.current = next;
@@ -291,6 +292,7 @@ export function useWorkspace(initialLocale: Locale) {
 
   const openSession = useCallback(
     async (id: string) => {
+      if (deletingSessionIdsRef.current.has(id)) return;
       const cached = sessionWorkspacesRef.current.get(id);
       if (cached) {
         navigationRef.current += 1;
@@ -316,7 +318,12 @@ export function useWorkspace(initialLocale: Locale) {
           loadStoredSession(id),
           loadDemoOverview(summary.demoPath),
         ]);
-        if (navigationRef.current !== loadId) return;
+        if (
+          navigationRef.current !== loadId ||
+          deletingSessionIdsRef.current.has(id)
+        ) {
+          return;
+        }
         const workspace: SessionWorkspace = {
           conversation: {
             demoPath: detail.demoPath,
@@ -485,18 +492,24 @@ export function useWorkspace(initialLocale: Locale) {
 
   const deleteSession = useCallback(
     async (id: string) => {
+      if (deletingSessionIdsRef.current.has(id)) return;
+      deletingSessionIdsRef.current.add(id);
       navigationRef.current += 1;
       setSessionLoading(false);
-      const workspace = sessionWorkspacesRef.current.get(id);
-      if (workspace?.task) {
-        workspace.task.controller.abort();
-        await workspace.task.promise;
+      try {
+        const workspace = sessionWorkspacesRef.current.get(id);
+        if (workspace?.task) {
+          workspace.task.controller.abort();
+          await workspace.task.promise;
+        }
+        await deleteStoredSession(id);
+        sessionWorkspacesRef.current.delete(id);
+        setRunningSessionIds((current) => withoutSession(current, id));
+        setSessions((items) => items.filter((item) => item.id !== id));
+        if (activeSessionIdRef.current === id) startNewSession();
+      } finally {
+        deletingSessionIdsRef.current.delete(id);
       }
-      await deleteStoredSession(id);
-      sessionWorkspacesRef.current.delete(id);
-      setRunningSessionIds((current) => withoutSession(current, id));
-      setSessions((items) => items.filter((item) => item.id !== id));
-      if (activeSessionIdRef.current === id) startNewSession();
     },
     [startNewSession],
   );
@@ -519,17 +532,29 @@ export function useWorkspace(initialLocale: Locale) {
           workspace.runtime,
         );
       } catch (caught) {
-        setSessionFeedback(sessionId, {
-          error: errorMessage(caught),
-          status: { key: "status.analysisFailed" },
-        });
-        void persistConversation(
+        updateSessionConversation(sessionId, (current) => ({
+          ...current,
+          runtimeState: appendUserToRuntimeState(current.runtimeState, question),
+        }));
+        return persistConversationWithRetry(
           sessionId,
           workspace.conversation,
           Date.now(),
-        ).catch(() => undefined);
-        return Promise.resolve();
+        )
+          .then(() => {
+            setSessionFeedback(sessionId, {
+              error: errorMessage(caught),
+              status: { key: "status.analysisFailed" },
+            });
+          })
+          .catch((persistError) => {
+            setSessionFeedback(sessionId, {
+              error: errorMessage(persistError),
+              status: { key: "status.analysisFailed" },
+            });
+          });
       }
+      const runtimeMessageCount = cache.runtime.history.length;
       workspace.runtime = cache;
       const task: RunningTask = {
         controller,
@@ -563,10 +588,9 @@ export function useWorkspace(initialLocale: Locale) {
             ...current,
             runtimeState: cache.runtime.state,
           }));
-          setSessionFeedback(sessionId, { status: { key: "status.complete" } });
           try {
             const updatedAt = Date.now();
-            await persistConversation(
+            await persistConversationWithRetry(
               sessionId,
               workspace.conversation,
               updatedAt,
@@ -586,29 +610,47 @@ export function useWorkspace(initialLocale: Locale) {
                 ),
               ),
             );
+            setSessionFeedback(sessionId, { status: { key: "status.complete" } });
           } catch (caught) {
-            setSessionFeedback(sessionId, { error: errorMessage(caught) });
+            setSessionFeedback(sessionId, {
+              error: errorMessage(caught),
+              status: { key: "status.analysisFailed" },
+            });
           }
         } catch (caught) {
           const stopped = controller.signal.aborted || isAbortError(caught);
           settleInterruptedEntries((update) =>
             updateSessionConversation(sessionId, update),
           );
+          const currentRuntimeState = cache.runtime.state;
+          const runtimeState = appendUserToRuntimeState(
+            currentRuntimeState,
+            question,
+            runtimeMessageCount,
+          );
+          if (runtimeState !== currentRuntimeState) workspace.runtime = undefined;
           updateSessionConversation(sessionId, (current) => ({
             ...current,
-            runtimeState: cache.runtime.state,
+            runtimeState,
           }));
-          setSessionFeedback(sessionId, {
-            error: stopped ? null : errorMessage(caught),
-            status: {
-              key: stopped ? "status.stopped" : "status.analysisFailed",
-            },
-          });
-          await persistConversation(
-            sessionId,
-            workspace.conversation,
-            Date.now(),
-          ).catch(() => undefined);
+          try {
+            await persistConversationWithRetry(
+              sessionId,
+              workspace.conversation,
+              Date.now(),
+            );
+            setSessionFeedback(sessionId, {
+              error: stopped ? null : errorMessage(caught),
+              status: {
+                key: stopped ? "status.stopped" : "status.analysisFailed",
+              },
+            });
+          } catch (persistError) {
+            setSessionFeedback(sessionId, {
+              error: errorMessage(persistError),
+              status: { key: "status.analysisFailed" },
+            });
+          }
         } finally {
           if (workspace.task === task) workspace.task = undefined;
           setRunningSessionIds((current) => withoutSession(current, sessionId));
@@ -968,6 +1010,34 @@ async function persistConversation(
     runtimeState: conversation.runtimeState as unknown as JsonValue | undefined,
     updatedAt,
   });
+}
+
+async function persistConversationWithRetry(
+  sessionId: string,
+  conversation: ConversationState,
+  updatedAt: number,
+): Promise<void> {
+  try {
+    await persistConversation(sessionId, conversation, updatedAt);
+  } catch {
+    await persistConversation(sessionId, conversation, updatedAt);
+  }
+}
+
+function appendUserToRuntimeState(
+  runtimeState: AgentRuntimeState | undefined,
+  question: string,
+  messageCount = -1,
+): AgentRuntimeState {
+  const messages = runtimeState?.messages ?? [];
+  const userIsRecorded = messageCount >= 0 && messages
+    .slice(messageCount)
+    .some((message) => message.role === "user" && message.content === question);
+  if (userIsRecorded && runtimeState) return runtimeState;
+  return {
+    ...runtimeState,
+    messages: [...messages, { role: "user", content: question }],
+  };
 }
 
 function selectDefaultProvider(
