@@ -1,9 +1,6 @@
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
-import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Box,
-  ButtonBase,
   Chip,
   CircularProgress,
   Divider,
@@ -26,21 +23,15 @@ import type { Translator } from "../i18n";
 export function DemoSidebar({
   conversation,
   demoLoading,
-  sessionBound,
-  sending,
-  onChooseDemo,
   t,
 }: {
   conversation: ConversationState;
   demoLoading: boolean;
-  sessionBound: boolean;
-  sending: boolean;
-  onChooseDemo: () => Promise<void>;
   t: Translator;
 }) {
   const header = asObject(conversation.header?.data);
   const roster = asObjectArray(conversation.players?.data);
-  const canChoose = !sessionBound && !demoLoading && !sending;
+  const mapName = header ? readString(header, "map_name", "mapName") : "";
 
   return (
     <Box
@@ -56,67 +47,53 @@ export function DemoSidebar({
         backgroundColor: "#101210",
       }}
     >
-      <SidebarSection title={t("demo.section")}>
-        <ButtonBase
-          component="button"
-          type="button"
-          disabled={!canChoose}
-          onClick={() => void onChooseDemo()}
-          sx={(theme) => ({
-            display: "flex",
-            width: "100%",
-            minHeight: 94,
-            flexDirection: "column",
-            gap: 0.45,
-            px: 1.5,
-            py: 1.4,
-            overflow: "hidden",
-            border: `1px ${conversation.demoPath ? "solid" : "dashed"} ${alpha(theme.palette.primary.main, 0.22)}`,
-            borderRadius: 1.4,
-            color: "text.secondary",
-            backgroundColor: alpha(theme.palette.primary.main, 0.025),
-            "&:hover": { borderColor: alpha(theme.palette.primary.main, 0.55) },
-            "&.Mui-disabled": { opacity: 0.82 },
-          })}
-        >
-          {demoLoading ? (
-            <CircularProgress size={22} />
-          ) : conversation.demoPath ? (
-            <InsertDriveFileOutlinedIcon color="primary" sx={{ fontSize: 23 }} />
-          ) : (
-            <UploadFileOutlinedIcon color="primary" sx={{ fontSize: 24 }} />
-          )}
-          <Typography noWrap component="strong" sx={{ width: "100%", color: "#d5dad5", fontSize: "0.72rem" }}>
-            {demoLoading
-              ? t("demo.parsing")
-              : conversation.demoPath
-                ? fileName(conversation.demoPath)
-                : t("demo.drop")}
-          </Typography>
-          <Typography variant="caption" sx={{ color: "#687068" }}>
-            {sessionBound
-              ? t("demo.bound")
-              : conversation.demoPath
-                ? t("demo.change")
-                : t("demo.browse")}
-          </Typography>
-        </ButtonBase>
-        {conversation.demoPath && (
-          <Tooltip title={conversation.demoPath} placement="bottom-start">
-            <Typography noWrap sx={{ mt: 0.9, color: "#626962", font: '0.56rem "Cascadia Mono", Consolas, monospace' }}>
-              {conversation.demoPath}
-            </Typography>
-          </Tooltip>
-        )}
-        {sessionBound && (
-          <Stack direction="row" spacing={0.7} sx={{ mt: 1.2, color: "#6d756d", alignItems: "flex-start" }}>
-            <LockOutlinedIcon sx={{ mt: "1px", fontSize: 13 }} />
-            <Typography sx={{ fontSize: "0.6rem", lineHeight: 1.5 }}>
-              {t("demo.boundDetail")}
+      <SidebarSection title={t("demo.overview")}>
+        {demoLoading ? (
+          <Stack spacing={1} sx={{ minHeight: 86, alignItems: "center", justifyContent: "center" }}>
+            <CircularProgress size={21} />
+            <Typography sx={{ color: "#7c847c", fontSize: "0.66rem" }}>
+              {t("demo.parsing")}
             </Typography>
           </Stack>
+        ) : conversation.demoPath ? (
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1.1} sx={{ minWidth: 0, alignItems: "center" }}>
+              <Box
+                sx={(theme) => ({
+                  display: "grid",
+                  width: 33,
+                  height: 33,
+                  flex: "0 0 auto",
+                  placeItems: "center",
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.25)}`,
+                  borderRadius: 1.1,
+                  color: "primary.main",
+                  backgroundColor: alpha(theme.palette.primary.main, 0.07),
+                })}
+              >
+                <InsertDriveFileOutlinedIcon sx={{ fontSize: 19 }} />
+              </Box>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography noWrap sx={{ color: "#d9ded9", fontSize: "0.72rem", fontWeight: 680 }}>
+                  {mapName || t("facts.unknown")}
+                </Typography>
+                <Typography noWrap sx={{ color: "#707870", fontSize: "0.6rem" }}>
+                  {fileName(conversation.demoPath)}
+                </Typography>
+              </Box>
+            </Stack>
+            <Tooltip title={conversation.demoPath} placement="bottom-start">
+              <Typography noWrap sx={{ color: "#626962", font: '0.56rem "Cascadia Mono", Consolas, monospace' }}>
+                {conversation.demoPath}
+              </Typography>
+            </Tooltip>
+            {header && <DemoFacts header={header} t={t} />}
+          </Stack>
+        ) : (
+          <Typography sx={{ color: "#687068", fontSize: "0.66rem", lineHeight: 1.55 }}>
+            {t("demo.empty")}
+          </Typography>
         )}
-        {header && <DemoFacts header={header} t={t} />}
       </SidebarSection>
 
       <Divider />

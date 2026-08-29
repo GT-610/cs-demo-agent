@@ -55,9 +55,6 @@ export function App() {
     <DemoSidebar
       conversation={workspace.conversation}
       demoLoading={workspace.demoLoading}
-      sessionBound={workspace.activeSessionId !== null}
-      sending={workspace.sending}
-      onChooseDemo={workspace.chooseDemo}
       t={t}
     />
   );
@@ -84,8 +81,6 @@ export function App() {
       <Box sx={{ gridColumn: { xs: 1, md: "2 / -1" }, gridRow: 1, minWidth: 0 }}>
         <WorkspaceHeader
           title={headerTitle}
-          status={workspace.status}
-          busy={busy}
           showDemoInfo={workspace.page === "conversation"}
           onOpenNavigation={() => setNavigationOpen(true)}
           onOpenDemoInfo={() => setDemoInfoOpen(true)}
