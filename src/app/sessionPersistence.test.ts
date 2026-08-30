@@ -12,6 +12,7 @@ describe("session persistence helpers", () => {
         content: "Checking rounds.",
         iteration: 1,
         status: "complete",
+        phase: "reasoning",
       },
       {
         id: "t1",
@@ -34,6 +35,7 @@ describe("session persistence helpers", () => {
           content: "Partial",
           iteration: 2,
           status: "streaming",
+          phase: "reasoning",
         },
         {
           id: "t1",

@@ -2,6 +2,7 @@ import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
+import PsychologyAltRoundedIcon from "@mui/icons-material/PsychologyAltRounded";
 import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import TerminalRoundedIcon from "@mui/icons-material/TerminalRounded";
 import {
@@ -30,7 +31,12 @@ import type { JsonValue } from "../agent/types";
 import { asObject, toolLabel } from "../app/display";
 import { markdownUrlTransform } from "../app/markdown";
 import { PROVIDER_LABELS } from "../app/state";
-import type { ModelOption, TimelineEntry, ToolTimelineEntry } from "../app/types";
+import type {
+  AssistantTimelineEntry,
+  ModelOption,
+  TimelineEntry,
+  ToolTimelineEntry,
+} from "../app/types";
 import type { Translator } from "../i18n";
 
 const MARKDOWN_COMPONENTS: Components = {
@@ -289,6 +295,9 @@ function TimelineItem({ entry, t }: { entry: TimelineEntry; t: Translator }) {
       </Paper>
     );
   }
+  if (entry.phase === "reasoning") {
+    return <ReasoningEntry entry={entry} t={t} />;
+  }
   return (
     <Stack component="article" direction="row" spacing={1.2} sx={{ alignItems: "flex-start" }}>
       <Box
@@ -322,6 +331,65 @@ function TimelineItem({ entry, t }: { entry: TimelineEntry; t: Translator }) {
         {entry.status === "streaming" && entry.content && <span className="streaming-cursor" aria-hidden="true" />}
       </Box>
     </Stack>
+  );
+}
+
+function ReasoningEntry({
+  entry,
+  t,
+}: {
+  entry: AssistantTimelineEntry;
+  t: Translator;
+}) {
+  const running = entry.status === "streaming";
+  return (
+    <Accordion
+      disableGutters
+      elevation={0}
+      sx={{
+        ml: 4.9,
+        maxWidth: 620,
+        border: 1,
+        borderColor: "divider",
+        backgroundColor: "#141714",
+        "&::before": { display: "none" },
+      }}
+    >
+      <AccordionSummary
+        expandIcon={
+          running ? (
+            <CircularProgress size={13} thickness={4.5} />
+          ) : (
+            <ExpandMoreRoundedIcon sx={{ color: "#717971", fontSize: 17 }} />
+          )
+        }
+        aria-label={running ? t("chat.working") : t("chat.thoughtComplete")}
+      >
+        <Stack direction="row" spacing={0.9} sx={{ alignItems: "center" }}>
+          <PsychologyAltRoundedIcon sx={{ color: "#768076", fontSize: 16 }} />
+          <Typography sx={{ color: "#8f988f", fontSize: "0.66rem", fontWeight: 620 }}>
+            {running ? t("chat.working") : t("chat.thoughtComplete")}
+          </Typography>
+        </Stack>
+      </AccordionSummary>
+      {entry.content && (
+        <AccordionDetails sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
+          <Box
+            className="markdown-body"
+            sx={{ color: "#929a92", fontSize: "0.68rem", lineHeight: 1.65 }}
+          >
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              urlTransform={markdownUrlTransform}
+              components={MARKDOWN_COMPONENTS}
+            >
+              {entry.content}
+            </ReactMarkdown>
+            {running && <span className="streaming-cursor" aria-hidden="true" />}
+          </Box>
+        </AccordionDetails>
+      )}
+    </Accordion>
   );
 }
 

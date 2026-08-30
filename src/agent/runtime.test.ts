@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AgentRuntime } from "./runtime";
+import { AgentRuntime, MAX_MODEL_TOOL_RESULT_CHARS } from "./runtime";
 import type {
   AgentEvent,
   JsonObject,
@@ -88,6 +88,78 @@ describe("AgentRuntime", () => {
           event.delta === "地图是 de_ancient。",
       ),
     ).toBe(true);
+    expect(runtime.history).toEqual([
+      { role: "system", content: "Use evidence." },
+      { role: "user", content: "这是什么地图？" },
+      { role: "assistant", content: "地图是 de_ancient。", toolCalls: [] },
+    ]);
+  });
+
+  test("bounds tool evidence sent to the model and samples across the result", async () => {
+    const adapter = new SequenceAdapter([
+      {
+        text: "",
+        toolCalls: [{ id: "large", name: "query_events", arguments: "{}" }],
+      },
+      { text: "done", toolCalls: [] },
+    ]);
+    const rows = Array.from({ length: 1_000 }, (_, index) => ({
+      index,
+      payload: "x".repeat(1_000),
+    }));
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({ data: rows, meta: { row_count: rows.length } }),
+    });
+
+    await runtime.send("large result");
+
+    const toolMessage = adapter.requests[1]?.messages.find(
+      (message) => message.role === "tool",
+    );
+    expect(toolMessage?.content.length).toBeLessThanOrEqual(
+      MAX_MODEL_TOOL_RESULT_CHARS,
+    );
+    const compact = JSON.parse(toolMessage?.content ?? "{}") as {
+      data: Array<{ index: number }>;
+      meta: Record<string, unknown>;
+    };
+    expect(compact.meta.model_context_limited).toBe(true);
+    expect(compact.meta.sampled).toBe(true);
+    expect(compact.data[0]?.index).toBe(0);
+    expect(compact.data.at(-1)?.index).toBe(999);
+  });
+
+  test("does not replay completed tool traces on the next user question", async () => {
+    const adapter = new SequenceAdapter([
+      {
+        text: "Checking.",
+        toolCalls: [{ id: "call", name: "get_demo_header", arguments: "{}" }],
+      },
+      { text: "First answer", toolCalls: [] },
+      { text: "Second answer", toolCalls: [] },
+    ]);
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({ data: { map_name: "de_nuke" }, meta: {} }),
+    });
+
+    await runtime.send("first");
+    await runtime.send("second");
+
+    expect(adapter.requests[2]?.messages).toEqual([
+      { role: "system", content: "Use evidence." },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "First answer", toolCalls: [] },
+      { role: "user", content: "second" },
+    ]);
+    expect(adapter.requests[2]?.continuation).toBeUndefined();
   });
 
   test("returns malformed tool arguments to the model as structured evidence", async () => {
@@ -212,7 +284,7 @@ describe("AgentRuntime", () => {
     expect(runtime.history).toEqual(stableHistory);
 
     await runtime.send("third");
-    expect(adapter.requests[3]?.continuation).toEqual(firstContinuation);
+    expect(adapter.requests[3]?.continuation).toBeUndefined();
   });
 
   test("returns history and reply message snapshots", async () => {
@@ -237,7 +309,7 @@ describe("AgentRuntime", () => {
     expect(runtime.history).toHaveLength(5);
   });
 
-  test("restores persisted history and continuation for a later request", async () => {
+  test("restores compact persisted history without replaying native continuation", async () => {
     const continuation = {
       provider: "openai-responses" as const,
       inputItems: [{ role: "user", content: "first" }],
@@ -271,7 +343,7 @@ describe("AgentRuntime", () => {
       { role: "assistant", content: "first answer", toolCalls: [] },
       { role: "user", content: "second" },
     ]);
-    expect(adapter.requests[0]?.continuation).toEqual(continuation);
+    expect(adapter.requests[0]?.continuation).toBeUndefined();
   });
 
   test("migrates canonical history and drops native continuation across providers", async () => {

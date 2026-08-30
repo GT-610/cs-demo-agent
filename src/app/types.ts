@@ -21,6 +21,7 @@ export interface AssistantTimelineEntry extends TimelineEntryBase {
   content: string;
   status: "streaming" | "complete";
   iteration: number;
+  phase: "reasoning" | "answer";
 }
 
 export interface ToolTimelineEntry extends TimelineEntryBase {

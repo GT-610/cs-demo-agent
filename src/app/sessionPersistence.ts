@@ -15,6 +15,7 @@ export function serializeTimeline(entries: readonly TimelineEntry[]): PersistedM
         metadata: {
           iteration: entry.iteration,
           status: entry.status === "streaming" ? "complete" : entry.status,
+          phase: entry.phase,
         },
       };
     }
@@ -38,7 +39,7 @@ export function serializeTimeline(entries: readonly TimelineEntry[]): PersistedM
 }
 
 export function deserializeTimeline(messages: readonly PersistedMessage[]): TimelineEntry[] {
-  return messages.flatMap((message): TimelineEntry[] => {
+  const entries = messages.flatMap((message): TimelineEntry[] => {
     if (message.kind === "user") {
       return [{ id: message.id, kind: "user", content: message.content }];
     }
@@ -51,6 +52,7 @@ export function deserializeTimeline(messages: readonly PersistedMessage[]): Time
           content: message.content,
           iteration: readPositiveInteger(metadata?.iteration) ?? 1,
           status: "complete",
+          phase: metadata?.phase === "reasoning" ? "reasoning" : "answer",
         },
       ];
     }
@@ -68,6 +70,19 @@ export function deserializeTimeline(messages: readonly PersistedMessage[]): Time
         ...(metadata && "result" in metadata ? { result: metadata.result } : {}),
       },
     ];
+  });
+  return entries.map((entry, index) => {
+    if (
+      entry.kind !== "assistant" ||
+      entry.phase === "reasoning" ||
+      !entries.slice(index + 1).some(
+        (candidate) =>
+          candidate.kind === "tool" && candidate.iteration === entry.iteration,
+      )
+    ) {
+      return entry;
+    }
+    return { ...entry, phase: "reasoning" };
   });
 }
 
