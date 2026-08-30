@@ -922,6 +922,7 @@ function applyAgentEvent(
           content: "",
           status: "streaming",
           iteration: event.iteration,
+          phase: "reasoning",
         },
       ],
     }));
@@ -946,7 +947,12 @@ function applyAgentEvent(
           ? [entry]
           : event.hasToolCalls && !event.text.trim()
             ? []
-            : [{ ...entry, content: event.text, status: "complete" }],
+            : [{
+                ...entry,
+                content: event.text,
+                status: "complete",
+                phase: event.hasToolCalls ? "reasoning" : "answer",
+              }],
       ),
     }));
     return;

@@ -37,6 +37,8 @@ interface ExecutedTool {
   ok: boolean;
 }
 
+export const MAX_MODEL_TOOL_RESULT_CHARS = 32_000;
+
 export class AgentRuntime {
   private readonly adapter: ProviderAdapter;
   private readonly config: ProviderConfig;
@@ -54,12 +56,12 @@ export class AgentRuntime {
     this.tools = options.tools;
     this.executeTool = options.executeTool;
     this.systemPrompt = options.systemPrompt;
-    this.maxIterations = options.maxIterations ?? 12;
+    this.maxIterations = options.maxIterations ?? 8;
     this.messages = restoreMessages(options.initialState, this.systemPrompt);
-    this.continuation = restoreContinuation(
-      options.initialState?.continuation,
-      options.config,
-    );
+    // Native provider continuations are useful only while a live tool loop is
+    // running. Replaying a persisted continuation can duplicate an entire
+    // historical trace and may no longer match the compact canonical history.
+    this.continuation = undefined;
   }
 
   get history(): readonly AgentMessage[] {
@@ -139,6 +141,8 @@ export class AgentRuntime {
         });
 
         if (turn.toolCalls.length === 0) {
+          this.messages = compactCompletedHistory(this.messages);
+          this.continuation = undefined;
           return { text: turn.text, messages: cloneMessages(this.messages) };
         }
 
@@ -156,7 +160,7 @@ export class AgentRuntime {
             return executed.message;
           }),
         );
-        this.messages.push(...results);
+        this.messages.push(...compactToolMessagesForModel(results));
       }
 
       throw new Error(
@@ -251,10 +255,20 @@ function restoreMessages(
   systemPrompt: string,
 ): AgentMessage[] {
   const restored = state?.messages?.filter((message) => message.role !== "system") ?? [];
-  return [
+  return compactCompletedHistory([
     { role: "system", content: systemPrompt },
     ...cloneMessages(restored),
-  ];
+  ]);
+}
+
+function compactCompletedHistory(messages: readonly AgentMessage[]): AgentMessage[] {
+  return cloneMessages(
+    messages.filter(
+      (message) =>
+        message.role !== "tool" &&
+        !(message.role === "assistant" && message.toolCalls.length > 0),
+    ),
+  );
 }
 
 function cloneMessages(messages: readonly AgentMessage[]): AgentMessage[] {
@@ -275,22 +289,6 @@ function cloneContinuation(
     ...continuation,
     inputItems: structuredClone(continuation.inputItems),
   };
-}
-
-function restoreContinuation(
-  continuation: StoredProviderContinuation | undefined,
-  config: ProviderConfig,
-): ProviderContinuation | undefined {
-  if (
-    !continuation ||
-    continuation.providerId !== config.providerId ||
-    continuation.providerKind !== config.kind ||
-    continuation.baseUrl !== config.baseUrl ||
-    continuation.model !== config.model
-  ) {
-    return undefined;
-  }
-  return cloneContinuation(continuation.value);
 }
 
 function storeContinuation(
@@ -324,4 +322,136 @@ function cleanValue(value: JsonValue): JsonValue {
     return removeNullValues(value);
   }
   return value;
+}
+
+function compactToolMessagesForModel(
+  messages: readonly ToolMessage[],
+): ToolMessage[] {
+  const totalLength = messages.reduce(
+    (total, message) => total + message.content.length,
+    0,
+  );
+  if (totalLength <= MAX_MODEL_TOOL_RESULT_CHARS) return [...messages];
+
+  const budgets = allocateToolResultBudgets(messages);
+  return messages.map((message, index) => ({
+    ...message,
+    content: serializeToolResultForModel(
+      parseJsonValue(message.content),
+      budgets[index] ?? 0,
+    ),
+  }));
+}
+
+function allocateToolResultBudgets(
+  messages: readonly ToolMessage[],
+): number[] {
+  const budgets = new Array<number>(messages.length).fill(0);
+  let remaining = MAX_MODEL_TOOL_RESULT_CHARS;
+  const indexes = messages
+    .map((message, index) => ({ index, length: message.content.length }))
+    .sort((left, right) => left.length - right.length);
+
+  for (const [position, item] of indexes.entries()) {
+    const slotsLeft = indexes.length - position;
+    const fairShare = Math.floor(remaining / slotsLeft);
+    const budget = Math.min(item.length, fairShare);
+    budgets[item.index] = budget;
+    remaining -= budget;
+  }
+  return budgets;
+}
+
+function serializeToolResultForModel(
+  result: JsonValue,
+  maxChars: number,
+): string {
+  const serialized = JSON.stringify(result);
+  if (serialized.length <= maxChars) return serialized;
+
+  const object = asJsonObject(result);
+  const data = object ? object.data : undefined;
+  if (object && Array.isArray(data)) {
+    const meta = asJsonObject(object.meta) ?? {};
+    const originalRowCount =
+      typeof meta.original_row_count === "number"
+        ? meta.original_row_count
+        : data.length;
+    let low = 0;
+    let high = data.length;
+    let best = boundedToolResult([], meta, originalRowCount);
+
+    while (low <= high) {
+      const count = Math.floor((low + high) / 2);
+      const candidate = boundedToolResult(
+        equidistantSample(data, count),
+        meta,
+        originalRowCount,
+      );
+      if (candidate.length <= maxChars) {
+        best = candidate;
+        low = count + 1;
+      } else {
+        high = count - 1;
+      }
+    }
+    if (best.length <= maxChars) return best;
+  }
+
+  const fallback = JSON.stringify({
+    data: null,
+    meta: {
+      truncated: true,
+      sampled: false,
+      model_context_limited: true,
+    },
+    model_context_note:
+      "The tool result exceeded the model context budget. Retry with narrower filters.",
+  });
+  if (fallback.length <= maxChars) return fallback;
+  if (maxChars >= 2) return "{}";
+  return maxChars === 1 ? "0" : "";
+}
+
+function parseJsonValue(value: string): JsonValue {
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    return { error: "Tool result could not be serialized", model_context_limited: true };
+  }
+}
+
+function boundedToolResult(
+  data: JsonValue[],
+  meta: JsonObject,
+  originalRowCount: number,
+): string {
+  return JSON.stringify({
+    data,
+    meta: {
+      ...meta,
+      row_count: data.length,
+      original_row_count: originalRowCount,
+      truncated: true,
+      sampled: true,
+      model_context_limited: true,
+    },
+  });
+}
+
+function equidistantSample(values: JsonValue[], limit: number): JsonValue[] {
+  if (limit <= 0 || values.length === 0) return [];
+  if (limit >= values.length) return [...values];
+  if (limit === 1) return [values[0]!];
+  const last = values.length - 1;
+  return Array.from(
+    { length: limit },
+    (_, index) => values[Math.floor(index * last / (limit - 1))]!,
+  );
+}
+
+function asJsonObject(value: JsonValue | undefined): JsonObject | null {
+  return value && !Array.isArray(value) && typeof value === "object"
+    ? value
+    : null;
 }
