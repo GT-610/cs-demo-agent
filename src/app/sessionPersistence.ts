@@ -39,12 +39,17 @@ export function serializeTimeline(entries: readonly TimelineEntry[]): PersistedM
 }
 
 export function deserializeTimeline(messages: readonly PersistedMessage[]): TimelineEntry[] {
+  const legacyAssistantIds = new Set<string>();
   const entries = messages.flatMap((message): TimelineEntry[] => {
     if (message.kind === "user") {
       return [{ id: message.id, kind: "user", content: message.content }];
     }
     if (message.kind === "assistant") {
       const metadata = asObject(message.metadata);
+      const persistedPhase = metadata?.phase;
+      const hasPersistedPhase =
+        persistedPhase === "reasoning" || persistedPhase === "answer";
+      if (!hasPersistedPhase) legacyAssistantIds.add(message.id);
       return [
         {
           id: message.id,
@@ -52,7 +57,7 @@ export function deserializeTimeline(messages: readonly PersistedMessage[]): Time
           content: message.content,
           iteration: readPositiveInteger(metadata?.iteration) ?? 1,
           status: "complete",
-          phase: metadata?.phase === "reasoning" ? "reasoning" : "answer",
+          phase: persistedPhase === "reasoning" ? "reasoning" : "answer",
         },
       ];
     }
@@ -74,16 +79,27 @@ export function deserializeTimeline(messages: readonly PersistedMessage[]): Time
   return entries.map((entry, index) => {
     if (
       entry.kind !== "assistant" ||
-      entry.phase === "reasoning" ||
-      !entries.slice(index + 1).some(
-        (candidate) =>
-          candidate.kind === "tool" && candidate.iteration === entry.iteration,
-      )
+      !legacyAssistantIds.has(entry.id) ||
+      !hasToolInSameUserTurn(entries, index, entry.iteration)
     ) {
       return entry;
     }
     return { ...entry, phase: "reasoning" };
   });
+}
+
+function hasToolInSameUserTurn(
+  entries: readonly TimelineEntry[],
+  startIndex: number,
+  iteration: number,
+): boolean {
+  for (const candidate of entries.slice(startIndex + 1)) {
+    if (candidate.kind === "user") return false;
+    if (candidate.kind === "tool" && candidate.iteration === iteration) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function titleFromPrompt(prompt: string): string {

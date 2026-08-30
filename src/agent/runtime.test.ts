@@ -133,6 +133,41 @@ describe("AgentRuntime", () => {
     expect(compact.data.at(-1)?.index).toBe(999);
   });
 
+  test("shares the tool-result context budget across parallel calls", async () => {
+    const adapter = new SequenceAdapter([
+      {
+        text: "",
+        toolCalls: [
+          { id: "first", name: "query_events", arguments: "{}" },
+          { id: "second", name: "query_ticks", arguments: "{}" },
+        ],
+      },
+      { text: "done", toolCalls: [] },
+    ]);
+    const rows = Array.from({ length: 1_000 }, (_, index) => ({
+      index,
+      payload: "x".repeat(1_000),
+    }));
+    const runtime = new AgentRuntime({
+      adapter,
+      config,
+      tools: [],
+      systemPrompt: "Use evidence.",
+      executeTool: async () => ({ data: rows, meta: { row_count: rows.length } }),
+    });
+
+    await runtime.send("parallel results");
+
+    const toolMessages = adapter.requests[1]?.messages.filter(
+      (message) => message.role === "tool",
+    ) ?? [];
+    expect(toolMessages).toHaveLength(2);
+    expect(
+      toolMessages.reduce((total, message) => total + message.content.length, 0),
+    ).toBeLessThanOrEqual(MAX_MODEL_TOOL_RESULT_CHARS);
+    expect(toolMessages.every((message) => message.content.length < MAX_MODEL_TOOL_RESULT_CHARS)).toBe(true);
+  });
+
   test("does not replay completed tool traces on the next user question", async () => {
     const adapter = new SequenceAdapter([
       {

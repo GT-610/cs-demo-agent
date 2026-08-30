@@ -50,6 +50,55 @@ describe("session persistence helpers", () => {
     expect(restored[1]).toMatchObject({ status: "error" });
   });
 
+  test("infers legacy reasoning only within the same user turn", () => {
+    const restored = deserializeTimeline([
+      { id: "u1", kind: "user", content: "Give me the score" },
+      {
+        id: "a1",
+        kind: "assistant",
+        content: "The score is 13–9.",
+        metadata: { iteration: 1 },
+      },
+      { id: "u2", kind: "user", content: "Review the decisive rounds" },
+      {
+        id: "a2",
+        kind: "assistant",
+        content: "Checking the round summaries.",
+        metadata: { iteration: 1 },
+      },
+      {
+        id: "t2",
+        kind: "tool",
+        content: "get_round_summary",
+        metadata: {
+          iteration: 1,
+          status: "success",
+          call: { id: "call-2", name: "get_round_summary", arguments: "{}" },
+        },
+      },
+      {
+        id: "a3",
+        kind: "assistant",
+        content: "The score answer stays visible.",
+        metadata: { iteration: 1, phase: "answer" },
+      },
+      {
+        id: "t3",
+        kind: "tool",
+        content: "get_round_summary",
+        metadata: {
+          iteration: 1,
+          status: "success",
+          call: { id: "call-3", name: "get_round_summary", arguments: "{}" },
+        },
+      },
+    ]);
+
+    expect(restored[1]).toMatchObject({ kind: "assistant", phase: "answer" });
+    expect(restored[3]).toMatchObject({ kind: "assistant", phase: "reasoning" });
+    expect(restored[5]).toMatchObject({ kind: "assistant", phase: "answer" });
+  });
+
   test("creates concise titles from the first prompt", () => {
     expect(titleFromPrompt("  Analyze   the pistol rounds  ")).toBe(
       "Analyze the pistol rounds",

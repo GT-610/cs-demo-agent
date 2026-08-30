@@ -160,7 +160,7 @@ export class AgentRuntime {
             return executed.message;
           }),
         );
-        this.messages.push(...results);
+        this.messages.push(...compactToolMessagesForModel(results));
       }
 
       throw new Error(
@@ -227,7 +227,7 @@ export class AgentRuntime {
           role: "tool",
           toolCallId: call.id,
           name: call.name,
-          content: serializeToolResultForModel(result),
+          content: JSON.stringify(result),
         },
       };
     } catch (error) {
@@ -324,9 +324,50 @@ function cleanValue(value: JsonValue): JsonValue {
   return value;
 }
 
-function serializeToolResultForModel(result: JsonValue): string {
+function compactToolMessagesForModel(
+  messages: readonly ToolMessage[],
+): ToolMessage[] {
+  const totalLength = messages.reduce(
+    (total, message) => total + message.content.length,
+    0,
+  );
+  if (totalLength <= MAX_MODEL_TOOL_RESULT_CHARS) return [...messages];
+
+  const budgets = allocateToolResultBudgets(messages);
+  return messages.map((message, index) => ({
+    ...message,
+    content: serializeToolResultForModel(
+      parseJsonValue(message.content),
+      budgets[index] ?? 0,
+    ),
+  }));
+}
+
+function allocateToolResultBudgets(
+  messages: readonly ToolMessage[],
+): number[] {
+  const budgets = new Array<number>(messages.length).fill(0);
+  let remaining = MAX_MODEL_TOOL_RESULT_CHARS;
+  const indexes = messages
+    .map((message, index) => ({ index, length: message.content.length }))
+    .sort((left, right) => left.length - right.length);
+
+  for (const [position, item] of indexes.entries()) {
+    const slotsLeft = indexes.length - position;
+    const fairShare = Math.floor(remaining / slotsLeft);
+    const budget = Math.min(item.length, fairShare);
+    budgets[item.index] = budget;
+    remaining -= budget;
+  }
+  return budgets;
+}
+
+function serializeToolResultForModel(
+  result: JsonValue,
+  maxChars: number,
+): string {
   const serialized = JSON.stringify(result);
-  if (serialized.length <= MAX_MODEL_TOOL_RESULT_CHARS) return serialized;
+  if (serialized.length <= maxChars) return serialized;
 
   const object = asJsonObject(result);
   const data = object ? object.data : undefined;
@@ -347,17 +388,17 @@ function serializeToolResultForModel(result: JsonValue): string {
         meta,
         originalRowCount,
       );
-      if (candidate.length <= MAX_MODEL_TOOL_RESULT_CHARS) {
+      if (candidate.length <= maxChars) {
         best = candidate;
         low = count + 1;
       } else {
         high = count - 1;
       }
     }
-    if (best.length <= MAX_MODEL_TOOL_RESULT_CHARS) return best;
+    if (best.length <= maxChars) return best;
   }
 
-  return JSON.stringify({
+  const fallback = JSON.stringify({
     data: null,
     meta: {
       truncated: true,
@@ -367,6 +408,17 @@ function serializeToolResultForModel(result: JsonValue): string {
     model_context_note:
       "The tool result exceeded the model context budget. Retry with narrower filters.",
   });
+  if (fallback.length <= maxChars) return fallback;
+  if (maxChars >= 2) return "{}";
+  return maxChars === 1 ? "0" : "";
+}
+
+function parseJsonValue(value: string): JsonValue {
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    return { error: "Tool result could not be serialized", model_context_limited: true };
+  }
 }
 
 function boundedToolResult(
