@@ -65,8 +65,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: CS Demo Agent ${{ github.ref_name }}
-          releaseBody: See the attached platform installers and packages.
+          releaseName: ${{ github.ref_name }}
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
