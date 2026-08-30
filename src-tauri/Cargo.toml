@@ -1,6 +1,6 @@
 [package]
 name = "cs-demo-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first AI analysis workspace for Counter-Strike demos"
 authors = ["CS Demo Agent contributors"]
 license = "GPL-3.0-only"
